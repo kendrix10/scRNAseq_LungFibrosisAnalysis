@@ -1,0 +1,1486 @@
+---
+title: "GSE250396 Bleomycin Lung PreProcessing"
+author: "Kendrix Kek"
+date: "2025-01-03"
+output:
+  html_document:
+    theme: sandstone
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, message = FALSE}
+library(GEOquery)
+library(crayon)
+library(tidyverse)
+library(Seurat)
+library(SeuratData)
+library(Azimuth)
+library(patchwork)
+library(Matrix)
+library(RCurl)
+library(DoubletFinder)
+library(scales)
+library(SoupX)
+library(cowplot)
+library(metap)
+library(SingleCellExperiment)
+library(DropletUtils)
+library(AnnotationHub)
+library(HGNChelper)
+library(ensembldb)
+library(multtest)
+library(glmGamPoi)
+library(pbapply)
+library(data.table)
+library(ggrepel)
+library(ggpubr)
+library(stringr)
+library(canvasXpress)
+library(clinfun)
+library(GGally)
+library(factoextra)
+library(DESeq2)
+library(limma)
+library(fgsea)
+library(org.Mm.eg.db)
+library(kableExtra)
+```
+
+
+# Step 1: Data Exploration and Import
+
+## Step 1.1: Read in all sample matrix and create Seurat object
+
+```{r read matrices and create Seurat object}
+# Specify path to supplementary files. 
+supp_file_path = "/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/scRNAseq_Lung-Fibrosis-Analysis/GSE250396/"
+
+# Get unique sample names.
+sample_names = list.files(path = paste0(supp_file_path, "raw_data"), pattern = "GSM", full.names = FALSE)
+sample_names
+
+# Create Seurat object for each sample.
+for (file in sample_names){
+  seurat_data <- Read10X(data.dir = paste0(supp_file_path, "raw_data/", file))
+  seurat_obj <- CreateSeuratObject(counts = seurat_data$`Gene Expression`,
+                                   min.features = 100,
+                                   project = file)
+  assign(file, seurat_obj)
+}
+
+# Remove unneeded objects from the environment.
+rm(file, seurat_data, seurat_obj)
+```
+
+
+## Step 1.2: Merge Seurat objects
+
+```{r merge Seurat objects}
+# Merge Seurat objects.
+merged_seurat <- merge(x = GSM7978625_d0,
+                       y = c(GSM7978626_d14,
+                             GSM7978627_d35),
+                       add.cell.id = c("Lung_Control_Day0",
+                                       "Lung_Bleomycin_Day14",
+                                       "Lung_Bleomycin_Day35"))
+
+# Concatenate the count matrices of the samples together.
+merged_seurat <- JoinLayers(merged_seurat)
+
+# Remove individual Seurat objects after successful merge.
+rm(list = ls(pattern = "GSM"))
+gc()
+```
+
+
+## Step 1.3: Read metadata
+
+```{r read GEO metadata}
+# Pull GEO metadata.
+GSE250396_meta <- getGEO(GEO = "GSE250396", GSEMatrix = TRUE)
+GSE250396_meta <- pData(GSE250396_meta$GSE250396_series_matrix.txt.gz)
+
+# Subset metadata.
+GSE250396_meta <- GSE250396_meta %>% subset(select = c(geo_accession,
+                                                       organism_ch1,
+                                                       `cell type:ch1`,
+                                                       `genotype:ch1`,
+                                                       `time:ch1`,
+                                                       `tissue:ch1`,
+                                                       `treatment:ch1`))
+
+# Rename columns to more accessible names.
+colnames(GSE250396_meta) <- c("orig.ident",
+                              "organism",
+                              "cell_type",
+                              "genotype",
+                              "timepoint",
+                              "tissue",
+                              "treatment")
+
+# Edit the orig.ident column to match Seurat object.
+GSE250396_meta$orig.ident <- gsub("GSM7978625", "GSM7978625_d0", GSE250396_meta$orig.ident)
+GSE250396_meta$orig.ident <- gsub("GSM7978626", "GSM7978626_d14", GSE250396_meta$orig.ident)
+GSE250396_meta$orig.ident <- gsub("GSM7978627", "GSM7978627_d35", GSE250396_meta$orig.ident)
+
+
+# Add quality metrics to the metadata. 
+# Count total percentage of mitochondrial genes.
+merged_seurat <- PercentageFeatureSet(merged_seurat, 
+                                      pattern = "^mt-", 
+                                      col.name = "percent.mito")
+
+# Count total percentage of ribosomal genes.
+merged_seurat <- PercentageFeatureSet(merged_seurat, 
+                                      pattern = "^rp[sl]",
+                                      col.name = "percent.ribo")
+
+# Count total haemoglobin genes (but not HBP).
+merged_seurat <- PercentageFeatureSet(merged_seurat,
+                                      pattern = "^hb[^(p)]",
+                                      col.name = "percent.globin")
+```
+
+
+## Step 1.4: Add metadata variables from GEO
+
+We can merged the metadata from GEO and put the merged metadata back into the Seurat object.
+
+```{r add metadata variables from GEO}
+# Get metadata from Seurat object.
+metadata = merged_seurat@meta.data %>% rownames_to_column()
+dim(metadata)
+
+# Merge metadata with GEO metadata by the newly created orig.ident column.
+metadata <- merge(metadata, GSE250396_meta, by = "orig.ident")
+dim(metadata)
+
+# Edit and retain only required columns.
+metadata <- metadata %>% column_to_rownames() 
+
+# Generate quality metrics.
+names(metadata)[names(metadata) == "nCount_RNA"] <- "nUMI"
+names(metadata)[names(metadata) == "nFeature_RNA"] <- "nGene"
+
+# Compute mitochondrial ratio.
+metadata$mitoRatio = PercentageFeatureSet(object = merged_seurat, pattern = "^mt-")
+metadata$mitoRatio = metadata$mitoRatio / 100
+
+# Calculate novelty score.
+metadata$log10GenesPerUMI <- log10(metadata$nGene) / log10(metadata$nUMI)
+
+# Add the new metadata back to the Seurat object. 
+merged_seurat@meta.data <- metadata
+
+# Remove unneeded objects.
+rm(GSE250396_meta, metadata, sample_names)
+```
+
+
+# Step 2: Quality Control
+
+## Step 2.1: Visualize cell counts
+
+Check cell counts with number of unique barcodes detected to determine capture efficiency.
+
+```{r visualize cell counts, out.width="100%"}
+# Extract metadata from Seurat object.
+metadata = merged_seurat@meta.data
+
+# Visualize cell counts.
+metadata %>%
+  ggplot(aes(x = timepoint, fill = timepoint)) +
+  geom_bar() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ggtitle("NCells")
+```
+
+
+## Step 2.2: Visualize UMI and gene counts per cell
+
+The UMI counts per cell should generally be above 500, that is the low end of what we expect. If UMI counts are between 500-1000 counts, it is usable but the cells probably should have been sequenced more deeply.
+
+```{r UMI counts per cell, out.width="100%"}
+# Visualize UMI counts per cell.
+metadata %>% 
+  ggplot(aes(x = nUMI, color = timepoint, fill = timepoint)) +
+  geom_density(alpha = 0.2) +
+  scale_x_log10(labels = label_number()) +
+  ylab("Cell density") +
+  geom_vline(xintercept = 500, linetype = "dashed", color = "red") +
+  theme_classic()
+
+# Compare UMI counts and gene counts per cell. 
+VlnPlot(merged_seurat, features = c("nUMI", "nGene"), alpha = 0.2, raster = FALSE)
+```
+
+
+## Step 2.3: Visualize novelty score of cells
+
+Generally, we expect the novelty score to be above 0.80 for good quality cells.
+
+```{r novelty score, out.width="100%"}
+# Visualize novelty score.
+metadata %>% 
+  ggplot(aes(x = log10GenesPerUMI, color = timepoint, fill = timepoint)) +
+  geom_density(alpha = 0.2) +
+  geom_vline(xintercept = 0.8, linetype = "dashed", color = "red") +
+  theme_classic()
+```
+
+
+## Step 2.4: Visualize poor cell quality based on mitochondrial, ribosomal and haemoglobin ratio
+
+In general, poor quality samples have mitochondrial and ribosomal ratio higher than 0.2 mark.
+
+```{r mito ratio, out.width="100%"}
+# Visualize mitochondrial ratio.
+metadata %>%
+  ggplot(aes(x = mitoRatio, color = timepoint, fill = timepoint)) +
+  geom_density(alpha = 0.2) +
+  scale_x_log10() +
+  geom_vline(xintercept = 0.2, linetype = "dashed", color = "red") +
+  theme_classic()
+```
+
+We can also use Seurat's native function to visualize mito, ribo and haemoglobin genes in the dataset.
+
+```{r mito, ribo and haemoglobin ratio, out.width="100%"}
+# Visualize all three metrics.
+VlnPlot(merged_seurat, features = c("percent.mito", "percent.ribo", "percent.globin"), raster = FALSE)
+```
+
+
+## Step 2.5: Visualize joint filtering effects
+
+Considering any of these QC metrics in isolation can lead to misinterpretation of cellular signals. Jointly visualizing the count and gene thresholds and additionally overlaying the mitochondrial fraction, gives a summarized persepective of the quality per cell.
+
+```{r joint filtering effects, out.width="100%"}
+# Visualize joint filtering QCs.
+metadata %>% 
+    ggplot(aes(x = nUMI, y = nGene, color = mitoRatio)) + 
+    geom_point() + 
+    scale_colour_gradient(low = "gray90", high = "black") +
+    stat_smooth(method = lm) +
+    scale_x_log10() + 
+    scale_y_log10() + 
+    geom_vline(xintercept = 500) +
+    geom_hline(yintercept = 250) +
+    theme_classic() +
+    facet_wrap(~timepoint)
+```
+
+
+## Step 2.6: Visualize valid cells with knee plot
+
+```{r valid cells knee plot, out.width="100%"}
+# Rank expression barcodes. 
+br.out = barcodeRanks(merged_seurat@assays$RNA$counts)
+
+# Plot knee plot.
+plot(br.out$rank, br.out$total, log = "xy", xlab = "Rank", ylab = "Total")
+abline(h = metadata(br.out)$knee, col = "dodgerblue", lty = 2)
+abline(h = metadata(br.out)$inflection, col = "forestgreen", lty = 2)
+legend("bottomleft", lty = 2, col = c("dodgerblue", "forestgreen"), legend = c("knee", "inflection"))
+
+# Remove unneeded object.
+rm(br.out)
+```
+
+
+## Step 2.7: Filtering
+
+### Step 2.7.1: Cell-level filtering
+
+Now that we have visualized the various metrics, we can decide on the thresholds to apply which will result in the removal of low quality cells. We will use the following thresholds:
+
+- nUMI > 500
+
+- nGene > 250
+
+- log10GenesPerUMI > 0.8
+
+- mitoRatio < 0.2
+
+```{r cell-level filtering}
+# Get pre-filtering cell counts.
+dim(merged_seurat)[2] # 103,750 cells
+
+# Low-quality cell filtering.
+umi_filtered <- subset(x = merged_seurat, subset = nUMI >= 500)
+gene_filtered <- subset(x = umi_filtered, subset = nGene >= 250)
+genesperumi_filtered <- subset(x = gene_filtered, subset = log10GenesPerUMI > 0.80)
+mitoratio_filtered <- subset(x = genesperumi_filtered, subset = mitoRatio < 0.20)
+
+# Get post-filtering Seurat object. 
+# Enter level of filtering desired here.
+cell_filtered_seurat = mitoratio_filtered
+
+# Get counts after low-quality cell filtering.
+dim(cell_filtered_seurat)[2] # 101,444 cells.
+```
+
+
+We can visualize the amount of cells removed and the number of cells remaining for each filtering step in the plot below.
+
+```{r cell-level filtering visualization, echo=FALSE, out.width="100%"}
+# Create filtering summary dataframe.
+filtering_summary <- data.frame(cell_number_remaining = c(ncol(merged_seurat),
+                                                          ncol(umi_filtered),
+                                                          ncol(gene_filtered),
+                                                          ncol(genesperumi_filtered),
+                                                          ncol(mitoratio_filtered)),
+                                filter_criteria = c("Pre-filtering counts",
+                                                    "Filter: UMI counts per cell (nUMI > 500)",
+                                                    "Filter: Genes detected per cell (nGene > 250)",
+                                                    "Filter: Complexity (log10GenesPerUMI > 0.8)",
+                                                    "Filter: Mitochondrial ratio (mitoRatio < 0.2)"))
+filtering_summary$filtered_out <- c(0, 
+                                    sapply(2:nrow(filtering_summary), 
+                                           function(x) 
+                                             filtering_summary$cell_number_remaining[x-1] - 
+                                             filtering_summary$cell_number_remaining[x]))
+
+filtering_summary$filter_criteria <- factor(filtering_summary$filter_criteria, 
+                                            rev(filtering_summary$filter_criteria))
+
+# Visualize filtering summary.
+ggplot(filtering_summary) +
+  geom_bar(aes(filter_criteria, -cell_number_remaining), 
+           stat = "identity", 
+           fill = "grey70", 
+           color = "black", 
+           alpha = 0.5) +
+  geom_bar(aes(filter_criteria, filtered_out), 
+           stat = "identity", 
+           fill = "darkred", 
+           color = "black", 
+           alpha = 0.5) +
+  geom_text(aes(x = filter_criteria, y = -min(cell_number_remaining)/2,  
+                label = comma(cell_number_remaining)), 
+            size = 5) +
+  geom_text(aes(x = filter_criteria, y = max(filtered_out)/1.5,  
+                label = comma(filtered_out)), 
+            size = 4) +
+  geom_hline(yintercept = 0) +
+  coord_flip() + 
+  theme_bw() + 
+  xlab("") + 
+  ylab("") + 
+  ggtitle("Cell-level filtering") +
+  theme(axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(colour = "grey20", size = 12),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        plot.title = element_text(face = "bold", size = 12, hjust = 0.5)) +
+  scale_x_discrete(position = "top") 
+
+# Remove unneeded objects.
+rm(merged_seurat, filtering_summary, gene_filtered, genesperumi_filtered, mitoratio_filtered, umi_filtered)
+```
+
+
+### Step 2.7.2: Gene-level filtering
+
+We also remove genes that have zero expression in all cells and genes that are only expressed in 10 or less cells as genes that are expressed in only a handful of cells are not meaningful and can bring down the averages for all the other cells that they are not expressed in.
+
+```{r gene-level filtering}
+# Extract count matrix.
+counts <- GetAssayData(object = cell_filtered_seurat, layer = "counts")
+
+# Get a logical vector for every gene that has more than zero counts per cell.
+nonzero <- counts > 0
+
+# Get a logical vector of genes that are expressed in 10 or more cells.
+keep_genes <- Matrix::rowSums(nonzero) >= 10
+
+# Subset counts to keep genes that are non-zero and expressed in 10 or more cells.
+filtered_counts <- counts[keep_genes, ]
+
+# Create new Seurat object with the subsetted counts.
+filtered_seurat <- CreateSeuratObject(filtered_counts, meta.data = cell_filtered_seurat@meta.data)
+```
+
+
+We can visualize the amount of genes removed and the number of genes remaining for each filtering step in the plot below.
+
+```{r gene-level filtering visualization, echo=FALSE, out.width="100%"}
+# Create filtering summary dataframe.
+filtering_summary <- data.frame(cell_number_remaining = c(nrow(cell_filtered_seurat),
+                                                          nrow(filtered_seurat)),
+                                filter_criteria = c("Pre-filtering counts",
+                                                    "Filter: Non-zero genes detected >= 10 cells"))
+filtering_summary$filtered_out <- c(0, 
+                                    sapply(2:nrow(filtering_summary), 
+                                           function(x) 
+                                             filtering_summary$cell_number_remaining[x-1] - 
+                                             filtering_summary$cell_number_remaining[x]))
+
+filtering_summary$filter_criteria <- factor(filtering_summary$filter_criteria, 
+                                            rev(filtering_summary$filter_criteria))
+
+# Visualize filtering summary.
+ggplot(filtering_summary) +
+  geom_bar(aes(filter_criteria, -cell_number_remaining), 
+           stat = "identity", 
+           fill = "grey70", 
+           color = "black", 
+           alpha = 0.5) +
+  geom_bar(aes(filter_criteria, filtered_out), 
+           stat = "identity", 
+           fill = "darkred", 
+           color = "black", 
+           alpha = 0.5) +
+  geom_text(aes(x = filter_criteria, y = -min(cell_number_remaining)/2,  
+                label = comma(cell_number_remaining)), 
+            size = 5) +
+  geom_text(aes(x = filter_criteria, y = max(filtered_out)/1.5,  
+                label = comma(filtered_out)), 
+            size = 4) +
+  geom_hline(yintercept = 0) +
+  coord_flip() + 
+  theme_bw() + 
+  xlab("") + 
+  ylab("") + 
+  ggtitle("Gene-level filtering") +
+  theme(axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(colour = "grey20", size = 12),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        plot.title = element_text(face = "bold", size = 12, hjust = 0.5)) +
+  scale_x_discrete(position = "top") 
+
+# Remove unneeded objects.
+rm(cell_filtered_seurat, counts, filtered_counts, filtering_summary, keep_genes, metadata, nonzero)
+```
+
+
+# Step 3: Normalization
+
+## Step 3.1: Pre-normalization visualization
+
+Let's have a look of our expression distribution before normalization.
+
+```{r pre-normalization visualization, out.width="100%"}
+# Visualize expression distribution before normalization.
+hist(colSums(filtered_seurat[["RNA"]]$counts), 
+     breaks = 100, 
+     col = "#212226",
+     main = "Pre-Normalization: Expression distribution", 
+     xlab = "Sum of expression")
+```
+
+
+## Step 3.2: Simple normalization
+
+Before we make any comparisons across cells, we will apply a simple normalization. This is solely for the purpose of exploring the sources of variation in our data.
+
+```{r perform simple normalization and visualize, out.width="100%"}
+# Apply simple normalization to merged Seurat objects.
+seurat_phase <- NormalizeData(filtered_seurat)
+
+# Visualize expression distribution after simple normalization.
+hist(colSums(seurat_phase[["RNA"]]$data), 
+     breaks = 100, 
+     col = "#b8520a",
+     main = "Post-Simple Normalization: Expression distribution", 
+     xlab = "Sum of expression")
+
+# Remove unneeded objects.
+rm(filtered_seurat)
+```
+
+
+## Step 3.3: Evaluate effects of cell cycle
+
+### Step 3.3.1: Set up cell cycle scores
+
+```{r get canonical cell-cycle markers}
+# Download cell cycle genes for organism at https://github.com/hbc/tinyatlas/tree/master/cell_cycle. 
+cc_file <- getURL("https://raw.githubusercontent.com/hbc/tinyatlas/master/cell_cycle/Mus_musculus.csv") 
+cell_cycle_genes <- read.csv(text = cc_file)
+
+# Remove unneeded objects.
+rm(cc_file)
+```
+
+All of the cell cycle genes are Ensembl IDs, but our gene IDs are the gene names. To score the genes in our count matrix for cell cycle, we need to obtain the gene names for the cell cycle genes.
+
+```{r get gene names from AnnotationHub}
+# Connect to AnnotationHub.
+ah <- AnnotationHub()
+
+# Access the Ensembl database for organism.
+ahDb <- query(ah, 
+              pattern = c("Mus musculus", "EnsDb"), 
+              ignore.case = TRUE)
+
+# Acquire the latest annotation files.
+id <- ahDb %>%
+        mcols() %>%
+        rownames() %>%
+        tail(n = 1)
+
+# Download the appropriate Ensembldb database.
+edb <- ah[[id]]
+
+# Extract gene-level information from database.
+annotations <- genes(edb, 
+                     return.type = "data.frame")
+
+# Select annotations of interest.
+annotations <- annotations %>%
+        dplyr::select(gene_id, gene_name, seq_name, gene_biotype, description)
+
+# Remove unneeded objects.
+rm(ah, ahDb, edb, id)
+```
+
+We can merge the Ensembl genes to the cell cycle genes.
+
+```{r merge ensembl to cell cycle genes}
+# Get gene names for Ensembl IDs for each gene.
+cell_cycle_markers <- dplyr::left_join(cell_cycle_genes, annotations, by = c("geneID" = "gene_id"))
+
+# Acquire the S phase genes.
+s_genes <- cell_cycle_markers %>%
+        dplyr::filter(phase == "S") %>%
+        pull("gene_name")
+        
+# Acquire the G2M phase genes.        
+g2m_genes <- cell_cycle_markers %>%
+        dplyr::filter(phase == "G2/M") %>%
+        pull("gene_name")
+
+# Remove unneeded objects.
+rm(cell_cycle_genes, cell_cycle_markers, annotations)
+```
+
+We can then use the annotated cell cycle genes to perform cell cycle scoring. 
+
+```{r cell cycle scoring}
+# Perform cell cycle scoring
+seurat_phase <- CellCycleScoring(seurat_phase,
+                                 g2m.features = g2m_genes,
+                                 s.features = s_genes)
+
+# Remove unneeded objects.
+rm(g2m_genes, s_genes)
+```
+
+
+### Step 3.3.2: Use PCA to evaluate effects of cell cycle
+
+```{r scale data, out.width="100%"}
+# Identify the most variable genes.
+seurat_phase <- FindVariableFeatures(seurat_phase, 
+                                     selection.method = "vst",
+                                     nfeatures = 2000, 
+                                     verbose = FALSE)
+             
+# Scale the counts.
+seurat_phase <- ScaleData(seurat_phase)
+
+# Visualize expression distribution after scaling.
+hist(colSums(seurat_phase[["RNA"]]$scale.data), 
+     breaks = 100, 
+     col = "#779e7f",
+     main = "Post-Scaling: Expression distribution", 
+     xlab = "Sum of expression")
+```
+
+
+```{r highly variable genes, out.width="100%"}
+# Identify the 15 most highly variable genes.
+ranked_variable_genes <- VariableFeatures(seurat_phase)
+top_genes <- ranked_variable_genes[1:15]
+
+# Plot the average expression and variance of these genes with labels to indicate which genes are in the top 15.
+p <- VariableFeaturePlot(seurat_phase)
+LabelPoints(plot = p, points = top_genes, repel = TRUE)
+
+# Remove unneeded objects.
+rm(ranked_variable_genes, top_genes, p)
+```
+
+
+```{r run PCA and visualize cell type effects, out.width="100%"}
+# Perform PCA.
+seurat_phase <- RunPCA(seurat_phase)
+
+# Plot the PCA colored by cell cycle phase.
+DimPlot(seurat_phase,
+        reduction = "pca",
+        group.by = "Phase",
+        split.by = "Phase")
+
+# Split effects of PCA by agedness
+DimPlot(seurat_phase,
+        reduction = "pca",
+        group.by = "Phase",
+        split.by = "timepoint")
+```
+
+We don't see large differences due to the effects of cell cycle, so cell cycle effects are not regressed out.
+
+
+## Step 3.4: SCTransform normalization
+
+```{r SCTransform normalization}
+# Free up memory.
+gc()
+
+# Set memory limit.
+options(future.globals.maxSize = 5000 * 1024^2)
+
+# Perform SCTransform normalization.  
+seurat_sct <- SCTransform(seurat_phase, 
+                          vars.to.regress = c("mitoRatio"),
+                          vst.flavor = "v2",
+                          conserve.memory = TRUE,
+                          verbose = FALSE)
+
+# Compare the objects before and after SCT transformation. 
+seurat_phase # Look at the feature counts before transformation.
+seurat_sct # Look at the feature counts after transformation.
+
+# Check which objects are stored in which assays. 
+seurat_sct@assays
+
+# Remove unneeded objects.
+rm(seurat_phase)
+```
+
+
+The SCTransform normalized counts are stored in the SCT$counts slot. Here is the distribution of the SCTransform normalized counts distribution. 
+
+```{r SCTransformed normalization visualization, out.width="100%"}
+# Visualize expression distribution after scaling.
+hist(colSums(seurat_sct[["SCT"]]$counts), 
+     breaks = 100, 
+     col = "#332f42",
+     main = "Post-SCTransform: Expression distribution", 
+     xlab = "Sum of expression")
+```
+
+
+The log-normalized SCTransfromed counts are also stored in the SCT$data slot. Here is the distribution of the log-normalized SCTransformed counts. 
+
+```{r log-normalized SCTransformed visualization, out.width="100%"}
+hist(colSums(seurat_sct[["SCT"]]$data), 
+     breaks = 100, 
+     col = "#b14b34",
+     main = "Post-SCTransformed: Log-normalized expression distribution", 
+     xlab = "Sum of expression")
+```
+
+
+# Step 4: Dimensional Reduction and Clustering
+
+The goal of this step is to perform unsupervised clustering to identify groups of cells based on similarities of their transcriptomes without any prior knowledge of the labels or the number of clusters. This can be challenging due to the high level of noise and large number of dimensions, so it is often beneficial to apply a dimensionality reduction method to reduce the amount of noise. 
+
+## Step 4.1: Run PCA 
+
+```{r run PCA and visualize dimension reduction, out.width="100%"}
+# Run PCA.
+seurat_sct <- RunPCA(seurat_sct, verbose = FALSE)
+
+# Visualize dimension reduction from PCA.
+seurat_sct <- RunUMAP(seurat_sct, dims = 1:40, reduction = "pca")
+DimPlot(object = seurat_sct, group.by = "timepoint")
+```
+
+
+## Step 4.2: Top PC-driving metagenes
+
+```{r visualize top PC-driving metagenes, fig.height=18, fig.width=15, out.width="100%"}
+# Explore the top PC markers.
+DimHeatmap(seurat_sct, 
+           dims = 1:9, 
+           cells = 500, 
+           balanced = TRUE)
+```
+
+We can visualize an elbow plot to see how many PCs to use for clustering.
+
+```{r elbow plot, out.width="100%"}
+# Build the elbow plot.
+# Determine percent of variation associated with each PC.
+pct <- seurat_sct[["pca"]]@stdev / sum(seurat_sct[["pca"]]@stdev) * 100
+
+# Calculate cumulative percents for each PC.
+cumu <- cumsum(pct)
+
+# Determine which PC exhibits cumulative percent greater than 90% and % variation associated with the PC as less than 5.
+co1 <- which(cumu > 90 & pct < 5)[1]
+co1
+
+# Determine the difference between variation of PC and subsequent PC.
+co2 <- sort(which((pct[1:length(pct) - 1] - pct[2:length(pct)]) > 0.1), decreasing = T)[1] + 1
+
+# Last point where change of % of variation is more than 0.1%.
+co2
+
+# Minimum of the two calculation.
+pcs <- min(co1, co2)
+pcs
+
+# Create a dataframe with values.
+elbowplot_df <- data.frame(pct = pct, 
+                           cumu = cumu, 
+                           rank = 1:length(pct))
+
+# Elbow plot to visualize.
+ggplot(elbowplot_df, aes(cumu, pct, label = rank, color = rank > pcs)) + 
+  geom_text() + 
+  geom_vline(xintercept = 90, color = "grey") + 
+  geom_hline(yintercept = min(pct[pct > 5]), color = "grey") +
+  theme_bw()
+
+# Remove unneeded objects.
+rm(co1, co2, cumu, elbowplot_df, pcs, pct)
+```
+
+Based on the elbow plot, we will use approx. 20 PCs to generate the clusters.
+
+
+## Step 4.3: Cluster the cells
+
+The basic steps towards complete clustering involve:
+
+- Measure of similarity: How does one quantify how close two data points are?
+
+- Quality function: How does one define the clustering/partition of the points?
+
+- Algorithm: How to find the clustering whereby the quality function is optimized?
+
+
+### Step 4.3.1: Find neighbours
+
+We use a graph-based community detection method where each vertex represents a cell and the weight of the edge measures similarities between two cells. Put simply, we start by building an unweighted K-nearest neighbour (k-NN) graph and add weights to obtain a shared nearest neighbour (SNN) graph. Weight can be added either by finding out the shared nodes (overlap) between two neighbours (more nodes; more similar the neighbours; more weight) or measuring the closeness of both neighbours to each other.  
+
+```{r find neighbours}
+# Compute SNN graph.
+seurat_cluster <- FindNeighbors(object = seurat_sct, dims = 1:20) # Based on elbow plot.
+
+# Remove unneeded object.
+rm(seurat_sct)
+```
+
+
+### Step 4.3.2: Find clusters
+
+Next, we want to iteratively group the neighbours together with the goal of combining the cells with similar transcriptomes together. Without knowing the number of clusters a priori, we use a range of resolution based on the approximation of the recommendation where datasets of 3,000 - 5,000 cells should set the resolution between 0.4 - 1.4. We have approximately 100,000 cells, so our range will start from 0.2 - 1.0.
+
+```{r find clusters at resolution range}
+# Determine start and end resolution range.
+start_reso_range = 0.2
+end_reso_range = 1
+range_interval = 0.2
+
+# Find clusters given the range.
+seurat_cluster <- FindClusters(object = seurat_cluster,
+                               resolution = seq(from = start_reso_range,
+                                                to = end_reso_range,
+                                                by = range_interval))
+
+# Remove unneeded objects.
+rm(start_reso_range, end_reso_range, range_interval)
+```
+
+We can look at the maximum number of clusters found at each resolution with the output below.
+
+```{r cluster resolution output}
+# Create a dummy table to contain the max cluster for each resolution.
+maxclust = c()
+clustoutput = seurat_cluster@meta.data %>% subset(select = grep("SCT_snn_", colnames(.)))
+clustoutput[] <- lapply(clustoutput, function(x) as.numeric(as.character(x)))
+
+# Iterate and print the maximum cluster count for each resolution.
+for (i in 1:ncol(clustoutput)){
+  maxclust[i] = max(clustoutput[, i])
+  print(paste0("Max n-cluster for ", 
+               names(clustoutput[i]), ": ", 
+               maxclust[i]))
+}
+
+# Remove unneeded objects.
+rm(clustoutput, i, maxclust)
+```
+We can visualize the difference clusterings of the resolutions side by side. In this case, we will look at these resolutions: 0.2, 0.4, 0.6.
+
+```{r visualize cluster UMAPs by resolutions, out.width="100%"}
+# Select resolutions to visualize.
+resolutions = c("0.2", "0.4", "0.6")
+feature_cols = paste0("SCT_snn_res.", resolutions)
+
+# Visualize UMAP of different resolutions.
+for (reso in feature_cols) {
+  Idents(seurat_cluster) <- reso
+  p <- DimPlot(seurat_cluster,
+               reduction = "umap",
+               label = TRUE,
+               label.size = 3,
+               raster = FALSE) + 
+    ggtitle(reso) +
+    NoLegend()
+  print(p)
+}
+
+# Remove unneeded objects.
+rm(feature_cols, p, reso, resolutions)
+```
+
+
+## Step 4.4: Explore clustering output
+
+Let's start with the exploration with the lowest resolution in the range, 0.2.
+
+```{r UMAP_reso_0.2, out.width="100%"}
+# Sort the cluster labels in ascending order.
+reso_columns = grep("SCT_snn_", colnames(seurat_cluster@meta.data), value = TRUE)
+metadata <- seurat_cluster@meta.data
+for (col in colnames(metadata)) {
+  if (col %in% reso_columns){
+    metadata[, col] <- factor(metadata[, col], levels = paste(sort(as.integer(levels(metadata[, col])))))
+  }
+}
+seurat_cluster@meta.data <- metadata
+
+# Assign desired cluster resolution as identity of Seurat.
+Idents(object = seurat_cluster) <- "SCT_snn_res.0.2"
+
+# Visualize cluster with a UMAP.
+DimPlot(seurat_cluster,
+        reduction = "umap",
+        label = TRUE,
+        label.size = 3) + 
+  ggtitle("SCT_snn_res.0.2") +
+  NoLegend()
+
+# Remove unneeded objects.
+rm(col, metadata, reso_columns)
+```
+
+
+## Step 4.5: Explore clustering quality control 
+
+### Step 4.5.1: Distribution of cells by treatment
+
+```{r cell by cluster distribution, out.width="100%"}
+# Extract number of cells per cluster.
+n_cells <- FetchData(seurat_cluster,
+                     vars = c("ident", "treatment")) %>%
+  dplyr::count(ident, treatment) 
+
+# Visualize distribution of cells by cluster in a barplot.
+ggplot(n_cells, aes(x = ident, y = n, fill = treatment)) +
+  geom_bar(position = position_dodge(), 
+           stat = "identity") +
+  geom_text(aes(label = n), 
+            size = 2, 
+            vjust = -0.2, 
+            position = position_dodge(1)) +
+  theme_classic() + 
+  theme(axis.text.x = element_text(size = 5))
+
+# Visualize distribution of treatment in each cluster.
+DimPlot(seurat_cluster, 
+        label = TRUE, 
+        split.by = "treatment",
+        label.size = 3,
+        raster = FALSE) + 
+  theme(axis.text.x = element_text(size = 6),
+        axis.text.y = element_text(size = 6)) +
+  NoLegend()
+
+# Remove unneeded object.
+rm(n_cells)
+```
+
+
+### Step 4.5.2: Mitochondrial enrichment in clusters
+
+We would like to see if there is any enrichment of mitochondria in our clusters and if we need to regress out the mitochondrial level in our data.
+
+```{r mito enrichment, out.width="100%"}
+# Plot mitoRatio to see if any cluster is enriched in mitochondrial level.
+FeaturePlot(seurat_cluster, 
+            reduction = "umap", 
+            features = "mitoRatio",
+            cols = c("#d6cfc7", "#01013f"),
+            pt.size = 0.5, 
+            order = TRUE,
+            min.cutoff = "q10",
+            label = TRUE,
+            label.size = 3,
+            label.color = "#960000") 
+```
+
+
+### Step 4.5.3: Variation in clusters due to cell cycle phase
+
+If our cell clusters show large differences in cell cycle expression, we might want to regress out the effects of cell cycle phase.
+
+```{r variation due to cell cycle, fig.height=6, fig.width=15, out.width="100%"}
+# Explore whether clusters segregate by cell cycle phase.
+DimPlot(seurat_cluster,
+        label = TRUE, 
+        split.by = "Phase",
+        label.size = 4) + 
+  theme(axis.text.x = element_text(size = 6),
+        axis.text.y = element_text(size = 6)) +
+  NoLegend()
+```
+
+We don't see any noticeable cell cycle phase effects in our clusters. 
+
+
+# Step 5: Cell Typing
+
+## Step 5.1: Exploration of cluster identities
+
+### Step 5.1.1: Explore PC metagenes
+
+We can explore if any specific PCs drive the separation of the clusters. 
+
+```{r variation due to PC, fig.height=15, fig.width=15, out.width="100%"}
+# Define columns in the metadata to visualize.
+columns = c(paste0("PC_", 1:12), "ident", "umap_1", "umap_2")
+
+# Extract data from Seurat object based on column names.
+pc_data <- FetchData(seurat_cluster, vars = columns)
+
+# Add cluster label to the centre of cluster on UMAP. 
+umap_label = FetchData(seurat_cluster, 
+                       vars = c("ident", "umap_1", "umap_2")) %>%
+  group_by(ident) %>%
+  summarise(x = mean(umap_1), y = mean(umap_2))
+
+# Plot a UMAP plot for each of the PCs.
+map(paste0("PC_", 1:12), function(pc){
+  ggplot(pc_data, aes(umap_1, umap_2)) +
+    geom_point(aes_string(color = pc), alpha = 0.7) +
+    scale_color_gradient(guide = "none", low = "#d6cfc7", high = "#01013f") +
+    geom_text(data = umap_label, aes(label = ident, x, y), color = "#960000", size = 4) +
+    theme_classic() +
+    ggtitle(pc)}) %>%
+  plot_grid(plotlist = .)
+
+# Remove unneeded objects.
+rm(columns, pc_data, umap_label)
+```
+
+We can print the genes driving different PCs and correlate those metagenes with the identity of the clusters.
+
+```{r PC metagenes}
+# Print PC metagenes.
+print(seurat_cluster[["pca"]], dims = 1:12, nfeatures = 5)
+```
+
+
+## Step 5.2: Explore cell identities with canonical markers
+
+### Step 5.2.1: Explore AT1 clusters
+
+The SCTransformed data was performed only on the 3000 most variable genes. Ideally, we want to explore the identity of the clusters with all the genes in the dataset and not just the top 3000 most variable genes, so we need to set the default assay back to the RNA assay.
+
+```{r define default assay}
+# Set default assay back to RNA.
+DefaultAssay(seurat_cluster) <- "RNA"
+```
+
+
+We can explore canonical cell type markers of our cell types of interest and visualize their expression on our UMAP. Canonical markers are obtained from [LungMAP](https://www.lungmap.net/research/cell-cards) and [A molecular cell atlas of the human lung from single-cell RNA sequencing (2020) Nature](https://www.nature.com/articles/s41586-020-2922-4#MOESM4)
+
+AT1 cells are defined by the cell markers: Hopx, Ager, Rtkn2, Pdpn and Clic5. We can visualize both the UMAP and Dotplot to see which cluster(s) do these markers localize.
+
+```{r AT1 expression - dotplot, fig.height=10, fig.width=15, out.width="100%"}
+# Visualize AT1 markers expression on dotplot.
+DotPlot(seurat_cluster,
+        features = c("Hopx", "Ager", "Rtkn2", "Pdpn", "Clic5"),
+        cluster.idents = TRUE,
+        cols = c("#d6cfc7", "#01013f"),
+        dot.scale = 6,
+        scale.by = "radius") +
+  ggtitle("AT1 markers") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r AT1 expression - UMAP, echo=FALSE, fig.height=12, fig.width=15, out.width="100%"}
+# Visualize AT1 markers expression on UMAP.
+FeaturePlot(seurat_cluster, 
+            reduction = "umap", 
+            features = c("Hopx", "Ager", "Rtkn2", "Pdpn", "Clic5"), 
+            cols = c("#d6cfc7", "#01013f"),
+            order = TRUE,
+            min.cutoff = "q10", 
+            label = TRUE, 
+            label.size = 4,
+            label.color = "#960000", 
+            raster = FALSE) +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8))
+```
+
+
+### Step 5.2.2: Explore AT2 clusters
+
+AT2 cells are defined by the cell markers: Sftpb, Sftpc, Sftpd, Muc1, Etv5 and Lamp3. 
+
+```{r AT2 expression - dotplot, fig.height=10, fig.width=15, out.width="100%"}
+# Visualize AT2 markers expression on dotplot.
+DotPlot(seurat_cluster,
+        features = c("Sftpb", "Sftpc", "Sftpd", "Muc1", "Etv5", "Lamp3"),
+        cluster.idents = TRUE,
+        cols = c("#d6cfc7", "#01013f"),
+        dot.scale = 6,
+        scale.by = "radius") +
+  ggtitle("AT2 markers") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r AT2 expression - UMAP, echo=FALSE, fig.height=12, fig.width=15, out.width="100%"}
+# Visualize AT2 markers expression on UMAP.
+FeaturePlot(seurat_cluster, 
+            reduction = "umap", 
+            features = c("Sftpb", "Sftpc", "Sftpd", "Muc1", "Etv5", "Lamp3"), 
+            cols = c("#d6cfc7", "#01013f"),
+            order = TRUE,
+            min.cutoff = "q10", 
+            label = TRUE, 
+            label.size = 4,
+            label.color = "#960000",
+            raster = FALSE) +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8))
+```
+
+
+### Step 5.2.3: Explore fibroblast clusters
+
+Alveolar fibroblast cells are defined by the cell markers: Pdgfra, Tcf21, Wnt2, Mfap5, Col1a1.
+
+Pericytes are defined by the cell markers: Pdgfrb, Trpc6, Cspg4.
+
+```{r fibroblast expression - dotplot, fig.height=10, fig.width=15, out.width="100%"}
+# Visualize alveolar fibroblast markers expression on dotplot.
+DotPlot(seurat_cluster,
+        features = c("Tcf21", "Wnt2", "Mfap5", "Pdgfra", "Pdgfrb", "Trpc6", "Col1a1"),
+        cluster.idents = TRUE,
+        cols = c("#d6cfc7", "#01013f"),
+        dot.scale = 6,
+        scale.by = "radius") +
+  ggtitle("Fibroblast markers") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r fibroblast expression - UMAP, echo=FALSE, fig.height=15, fig.width=15, out.width="100%"}
+# Visualize alveolar fibroblast markers expression on UMAP.
+FeaturePlot(seurat_cluster, 
+            reduction = "umap", 
+            features = c("Tcf21", "Wnt2", "Mfap5", "Pdgfra", "Pdgfrb", "Trpc6", "Col1a1"), 
+            cols = c("#d6cfc7", "#01013f"),
+            order = TRUE,
+            min.cutoff = "q10", 
+            label = TRUE, 
+            label.size = 4,
+            label.color = "#960000",
+            raster = FALSE) +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8))
+```
+
+
+### Step 5.2.4: Explore myofibroblast clusters
+
+Myofibroblast cells are defined by the cell markers: Wt1, Fgf18, Dach2, Frem2, Eln, Acta2.
+
+```{r myofibroblast expression - dotplot, fig.height=10, fig.width=15, out.width="100%"}
+# Visualize myofibroblast markers expression on dotplot.
+DotPlot(seurat_cluster,
+        features = c("Wt1", "Fgf18", "Dach2", "Frem2", "Acta2"),
+        cluster.idents = TRUE,
+        cols = c("#d6cfc7", "#01013f"),
+        dot.scale = 6,
+        scale.by = "radius") +
+  ggtitle("Myofibroblast markers") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r myofibroblast expression - UMAP, echo=FALSE, fig.height=12, fig.width=15, out.width="100%"}
+# Visualize myofibroblast markers expression on UMAP.
+FeaturePlot(seurat_cluster, 
+            reduction = "umap", 
+            features = c("Wt1", "Fgf18", "Dach2", "Frem2", "Acta2"), 
+            cols = c("#d6cfc7", "#01013f"),
+            order = TRUE,
+            min.cutoff = "q10", 
+            label = TRUE, 
+            label.size = 4,
+            label.color = "#960000",
+            raster = FALSE) +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8))
+```
+
+
+## Step 5.3: Cell type annotation
+
+### Step 5.3.1: Reference-based Azimuth annotation
+
+Azimuth uses a reference-based mapping with the Human Biomolecular Atlas Project, containing references for multiple human tissues.
+
+```{r run Azimuth}
+# Check all available Azimuth references.
+available_data <- AvailableData()
+available_data[grep("Azimuth", available_data[, 3]), 1:3] # Use lungref.
+
+# Run Azimuth with lungref.
+options(timeout = 1000)
+seurat_annotated <- RunAzimuth(seurat_cluster, reference = "lungref", assay = "RNA")
+
+# Remove unneeded object.
+rm(available_data)
+```
+
+```{r Azimuth UMAP, fig.height=12, fig.width=15, out.width="100%"}
+# Assign desired cluster resolution as identity of Seurat.
+Idents(object = seurat_annotated) <- "predicted.ann_finest_level"
+
+# Visualize annotated cluster with a UMAP.
+DimPlot(seurat_annotated,
+        reduction = "umap",
+        group.by = "predicted.ann_finest_level",
+        label = TRUE,
+        label.size = 4,
+        repel = TRUE) + 
+  ggtitle("Azimuth annotation") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  NoLegend()
+
+# Visualize annotation prediction score.
+FeaturePlot(seurat_annotated, 
+            reduction = "umap", 
+            features = "mapping.score", 
+            cols = c("#01013f", "#59974d", "#fff000")) +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  ggtitle("Annotation prediction score")
+```
+
+```{r print probable annotation for each cluster}
+# Get metadata.
+annotation_meta = seurat_annotated@meta.data
+
+# Subset the required columns.
+annotation_meta <- annotation_meta %>% subset(select = c(SCT_snn_res.0.2, predicted.ann_finest_level, mapping.score))
+
+# Group the table by cluster and annotation.
+annotation_meta <- annotation_meta %>% 
+  dplyr::rename(cluster = "SCT_snn_res.0.2", 
+                cluster_annotation = "predicted.ann_finest_level") %>%
+  group_by(cluster, cluster_annotation) %>% 
+  summarise(mean_mapping_score = mean(mapping.score))
+
+# Visualize the probable annotations for each cluster.
+annotation_meta <- annotation_meta %>% arrange(cluster, desc(mean_mapping_score)) %>% slice_head(n = 3)
+annotation_meta
+
+# Remove unneeded object.
+rm(annotation_meta)
+```
+
+
+### Step 5.3.2: Marker-based ScType annotation
+
+We can cross-check the reference-based annotation with the ScType annotation for validation.
+
+```{r prepare data for ScType annotation, out.width="100%", warning=FALSE}
+# Load in ScType functions.
+source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/auto_detect_tissue_type_KK.R")
+source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/gene_sets_prepare.R")
+source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/sctype_score_.R")
+
+# Set path to ScType reference database.
+db_ = "https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/ScTypeDB_full.xlsx"
+
+# Check tissue type for validation.
+tissue_guess <- auto_detect_tissue_type(path_to_db_file = db_, 
+                                        seuratObject = seurat_cluster, 
+                                        scaled = TRUE, 
+                                        assay = "SCT") 
+
+# Define Seurat object.
+seuobj = seurat_cluster
+
+# Specify tissue of interest.
+tissue = "Lung"
+
+# Prepare gene sets. 
+gs_list <- gene_sets_prepare(db_, tissue)
+    
+# Check Seurat object version - count matrix is extracted differently between versions.
+seurat_package_v5 <- isFALSE("counts" %in% names(attributes(seuobj[["RNA"]])))
+print(sprintf("Seurat object %s is used", ifelse(seurat_package_v5, "v5", "v4")))
+    
+# Extract scaled scRNAseq matrix.
+scRNAseqData_scaled <- if (seurat_package_v5) as.matrix(seuobj[["RNA"]]$scale.data) else 
+  as.matrix(seuobj[["RNA"]]@scale.data)
+    
+# Run ScType.
+es.max <- sctype_score(scRNAseqData = scRNAseqData_scaled, 
+                       scaled = TRUE, 
+                       gs = gs_list$gs_positive, 
+                       gs2 = gs_list$gs_negative)
+    
+# Merge ScType results by clusters.
+cL_results <- do.call("rbind", 
+                      lapply(unique(seuobj@meta.data$seurat_clusters), 
+                             function(cl){es.max.cl = sort(
+                               rowSums(
+                                 es.max[, rownames(
+                                   seuobj@meta.data[
+                                     seuobj@meta.data$seurat_clusters == cl, ])]),
+                               decreasing = !0)
+                             head(data.frame(cluster = cl,
+                                             type = names(es.max.cl),
+                                             scores = es.max.cl,
+                                             ncells = sum(seuobj@meta.data$seurat_clusters == cl)), 10)
+                             }))
+sctype_scores <- cL_results %>% group_by(cluster) %>% top_n(n = 1, wt = scores)
+    
+# Set low-confident (low ScType score) clusters to "Unknown".
+sctype_scores$type[as.numeric(as.character(sctype_scores$scores)) < sctype_scores$ncells/4] <- "Unknown"
+print(sctype_scores[, 1:3])
+
+# Add annotated cell types to the metadata.
+seurat_cluster@meta.data$sctype_annotation = ""
+
+for(j in unique(sctype_scores$cluster)){
+  cl_type = sctype_scores[sctype_scores$cluster==j, ]
+  seurat_cluster@meta.data$sctype_annotation[seurat_cluster@meta.data$seurat_clusters == j] = as.character(cl_type$type[1])
+}
+```
+
+```{r sctype visualization, fig.height=12, fig.width=15, out.width="100%"}
+# Plot UMAP with ScType annotation.
+DimPlot(seurat_cluster, 
+        reduction = "umap", 
+        label = TRUE, 
+        label.size = 3,
+        repel = TRUE, 
+        group.by = "sctype_annotation") + 
+  NoLegend()
+
+# Remove unneeded objects.
+rm(auto_detect_tissue_type, cL_results, cl_type, db_, es.max,
+   gene_sets_prepare, gs_list, j, scRNAseqData_scaled, sctype_score,
+   sctype_scores, seuobj, seurat_package_v5, tissue, tissue_guess)
+```
+
+
+## Step 5.4: Cross-check and collapse annotated cell types
+
+### Step 5.4.1: Add the Azimuth annotation to original seurat object
+
+```{r add Azimuth annotation to seurat_cluster}
+# Add metadata from seurat_annotated, which contains the Azimuth annotation and ScType annotation to seurat_cluster.
+seurat_cluster@meta.data <- seurat_annotated@meta.data
+
+# Get Ensembl annotation data.
+# Connect to AnnotationHub.
+ah <- AnnotationHub()
+
+# Access the Ensembl database for organism.
+ahDb <- query(ah, 
+              pattern = c("Mus musculus", "EnsDb"), 
+              ignore.case = TRUE)
+
+# Acquire the latest annotation files.
+id <- ahDb %>%
+  mcols() %>%
+  rownames() %>%
+  tail(n = 1)
+
+# Download the appropriate Ensembldb database.
+edb <- ah[[id]]
+
+# Extract gene-level information from database.
+annotations <- genes(edb, return.type = "data.frame")
+
+# Select annotations of interest.
+annotations <- annotations %>%
+  dplyr::select(gene_id, gene_name, seq_name, gene_biotype, description)
+
+# Remove unneeded objects.
+rm(ah, ahDb, edb, id)
+```
+
+
+### Step 5.4.2: Remove cells that are identified as nasal or mesothelium
+
+```{r remove nasal and mesothelium cell types}
+# Check unique cell type labels.
+unique(seurat_cluster$predicted.ann_finest_level)
+
+# Remove any cells that are annotated as nasal.
+grep("nasal", seurat_cluster$predicted.ann_finest_level, value = TRUE) %>% unique()
+# Club (nasal), Goblet (nasal)
+dim(seurat_cluster)[2] # 101,444
+seurat_cluster <- subset(seurat_cluster, 
+                         subset = predicted.ann_finest_level %in% c("Club (nasal)",
+                                                                    "Goblet (nasal)"),
+                         invert = TRUE)
+dim(seurat_cluster)[2] # 101,423 (21 cells removed)
+
+# Remove any cells that are labelled mesothelial cells as they are pleural and are not specialized lung cells.  
+grep("Mesothelium", seurat_cluster$predicted.ann_finest_level, value = TRUE) %>% unique() 
+# None
+```
+
+
+### Step 5.4.3: Collapse cell type annotation
+
+```{r collapse cell type annotation}
+# Pull cell metadata from the Seurat object.
+metadata <- seurat_cluster@meta.data
+
+# Aggregate some annotated cell types.
+# Find all fibroblasts and aggregate them together.
+grep("fibroblast", metadata$predicted.ann_finest_level, value = TRUE) %>% unique()
+# Alveolar fibroblasts, Adventitial fibroblasts, Peribronchial fibroblasts
+metadata <- mutate(metadata, 
+                   predicted.ann_finest_level = 
+                     recode(predicted.ann_finest_level, 
+                            "Alveolar fibroblasts" = "Fibroblasts",
+                            "Adventitial fibroblasts" = "Fibroblasts",
+                            "Peribronchial fibroblasts" = "Fibroblasts"))
+
+# Find all endothelial cells and aggregate them together.
+grep("EC", metadata$predicted.ann_finest_level, value = TRUE) %>% unique()
+# EC arterial, EC venous systemic, EC general capillary, EC aerocyte capillary, Lympathic EC differentiating, EC venous pulmonary, Lympathic EC mature.
+metadata <- mutate(metadata, 
+                   predicted.ann_finest_level = 
+                     recode(predicted.ann_finest_level, 
+                            "EC general capillary" = "Endothelial capillary",
+                            "EC aerocyte capillary" = "Endothelial capillary",
+                            "EC arterial" = "Endothelial arterial",
+                            "EC venous systemic" = "Endothelial venous",
+                            "EC venous pulmonary" = "Endothelial venous"))
+
+metadata <- mutate(metadata, 
+                   predicted.ann_finest_level = 
+                     recode(predicted.ann_finest_level, 
+                            "Lymphatic EC mature" = "Endothelial lymphatic",
+                            "Lymphatic EC differentiating" = "Endothelial lymphatic"))
+
+# Find all smooth muscle cells and aggregate them together.
+grep("Smooth|SM", metadata$predicted.ann_finest_level, value = TRUE) %>% unique()
+# Smooth muscle, SM activated stress response.
+metadata <- mutate(metadata, 
+                   predicted.ann_finest_level = 
+                     recode(predicted.ann_finest_level, 
+                            "Smooth muscle" = "VSMCs",
+                            "SM activated stress response" = "VSMCs"))
+
+# Find all immune cells and aggregate them together.
+metadata$predicted.ann_finest_level[metadata$predicted.ann_level_1 == "Immune"] %>% unique()
+# B cells, DC2, Classical monocytes, Monocyte-derived Mφ, CD4 T cells, Non-classical monocytes, Plasma cells, CD8 T cells, Migratory DCs, Plasmacytoid DCs, Interstitial Mφ perivascular, T cells proliferating, Mast cells, Alveolar macrophages, Alveolar Mφ proliferating, NK cells.
+metadata <- mutate(metadata, 
+                   predicted.ann_finest_level = 
+                     recode(predicted.ann_finest_level, 
+                            "B cells" = "Immune",
+                            "DC2" = "Immune",
+                            "Classical monocytes" = "Immune",
+                            "Monocyte-derived Mφ" = "Immune",
+                            "CD4 T cells" = "Immune",
+                            "Non-classical monocytes" = "Immune",
+                            "Plasma cells" = "Immune",
+                            "CD8 T cells" = "Immune",
+                            "Migratory DCs" = "Immune",
+                            "Plasmacytoid DCs" = "Immune",
+                            "Interstitial Mφ perivascular" = "Immune",
+                            "T cells proliferating" = "Immune",
+                            "Mast cells" = "Immune",
+                            "Alveolar macrophages" = "Immune",
+                            "Alveolar Mφ proliferating" = "Immune",
+                            "NK cells" = "Immune"))
+
+# Get metadata column and rename.
+metadata = (metadata %>%
+              subset(select = -cell_type) %>%
+              rename("predicted.ann_finest_level" = "cell_type"))
+
+# Add edited metadata back to Seurat object.
+seurat_cluster@meta.data <- metadata
+
+# Set default idents of Seurat object.
+Idents(seurat_cluster) <- "cell_type"
+```
+
+
+## Step 5.5: Final cell type annotation
+
+```{r final annotation UMAP, message=FALSE, fig.height=12, fig.width=15, out.width="100%"}
+# Set colour scheme based on annotated cell type.
+celltype_col = c("AT1" = "#2f4f4f",
+                 "AT2" = "#00bfff",
+                 "Basal resting" = "#2e8b57",
+                 "Club (non-nasal)" = "#8b008b",
+                 "Endothelial arterial" = "#ffa500",
+                 "Endothelial capillary" = "#808000",
+                 "Endothelial lympathic" = "#00008b",
+                 "Endothelial venous" = "#00ff00",
+                 "Fibroblasts" = "#ff4500",
+                 "Immune" = "#f08080",
+                 "Ionocyte" = "#f0e68c",
+                 "Multiciliated (non-nasal)" = "#ff00ff",
+                 "Myofibroblasts" = "#c71585",
+                 "Neuroendocrine" = "#00fa9a",
+                 "Pericytes" = "#ff1493",
+                 "Suprabasal" = "#eee8aa",
+                 "Transitional Club-AT2" = "#9370db",
+                 "VSMCs" = "#00ffff")
+
+# Visualize annotated cluster with a UMAP.
+DimPlot(seurat_cluster,
+        reduction = "umap",
+        group.by = "cell_type",
+        cols = celltype_col,
+        label = TRUE,
+        label.size = 4,
+        repel = TRUE,
+        raster = FALSE) + 
+  ggtitle("Final cell type annotation") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+```
+
+
+# Step 6: Save Seurat objects.
+
+```{r save objects}
+save(seurat_cluster, 
+     file = "/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/scRNAseq_LungFibrosisAnalysis/GSE250396/data/preprocessed_seurat_obj.RData")
+```
+
+
+# References
+
+Analysis codes are adapted from [HBCtraining](https://hbctraining.github.io/scRNA-seq_online/lessons/08_SC_clustering_quality_control.html) and [Ouyang Lab](https://ouyanglab.com/singlecell/clust.html) with credits going to the original authors of the publications cited in the book. Reference materials are adapted from [SVI Bioinformatics and Cellular Genomics Lab](https://biocellgen-public.svi.edu.au/mig_2019_scrnaseq-workshop/clustering-and-cell-annotation.html) with credits going to the original authors. 
+

@@ -1,0 +1,1287 @@
+---
+title: "GSE264278_Bleomycin_Lung_Analysis"
+author: "Kendrix Kek"
+date: "2025-02-01"
+output:
+  html_document:
+    theme: sandstone
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, message = FALSE}
+library(GEOquery)
+library(crayon)
+library(tidyverse)
+library(Seurat)
+library(SeuratData)
+library(Azimuth)
+library(patchwork)
+library(Matrix)
+library(RCurl)
+library(DoubletFinder)
+library(scales)
+library(SoupX)
+library(cowplot)
+library(metap)
+library(SingleCellExperiment)
+library(DropletUtils)
+library(AnnotationHub)
+library(HGNChelper)
+library(ensembldb)
+library(multtest)
+library(glmGamPoi)
+library(pbapply)
+library(data.table)
+library(ggrepel)
+library(ggpubr)
+library(stringr)
+library(canvasXpress)
+library(clinfun)
+library(GGally)
+library(gridExtra)
+library(factoextra)
+library(DESeq2)
+library(EnhancedVolcano)
+library(ComplexHeatmap)
+library(limma)
+library(fgsea)
+library(org.Mm.eg.db)
+library(kableExtra)
+```
+
+
+## Experimental design
+
+**GEO Accession**: GSE264278
+
+**Publication Title**: SFTPB in serum extracellular vesicles as a biomarker of progressive pulmonary fibrosis
+
+**Authors**: Enomoto T et al. 
+
+**Publication**: N/A
+
+---
+
+**Rationale**: Pulmonary fibrosis (PF) is a progressive fibrotic disease with a poor prognosis and suboptimal therapeutic options. To construct comprehensive single-cell atlas and identify disease-relevant cell subsets and gene signatures of the murine models of PF pathogenesis and lung repair, time-course singel-cell RNA-seq analysis of bleomycin (BLM) and LPS-induced lung injury/fibrosis models were performed. The authors sampled mouse lungs of untreated, day3, 7, 14, 28, 42, 63 (BLM model, 1.25 mg/kg), day3, 7, 14 (3 mg/kg), and day7, 14, 42 (LPS model, 1mg/ml, 50ul/head) with 5 biological replicates (except BLM 3mg/kg at day 14 which includes 2 biological replicate) and processed by using TAS-Seq protocol (Shichino et al. Commnue Biol 2022). The authors found that some of the early phase-specific markers, and repair phase-specific cell subsets and associated gene signatures. Of these, the authors found that Sftpb was an early marker of lung injury that was specifically expressed on AT2 cells, and SFTPC protein also highly expressed in the serum extracellular vesicles from prognosis-worsen PF-ILD patients. Our dataset might useful to clarify lung injury and repair mechanisms.
+
+**Methodology**: The authors sampled mouse lungs of untreated, day3, 7, 14, 28, 42, 63 (BLM model, 1.25 mg/kg), day3, 7, 14 (3 mg/kg), and day7, 14, 42 (LPS model) with 5 biological replicates (except BLM 3mg/kg at day 14 which includes 2 biological replicate) and processed by using TAS-Seq protocol (Shichino et al. Commnue Biol 2022).
+
+
+## Load pre-processed Seurat object
+
+```{r load pre-processed Seurat objects}
+# Specify project file path. 
+project_path = "/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/scRNAseq_LungFibrosisAnalysis/GSE264278/"
+
+# Load pre-processed Seurat objects.
+load(file = paste0(project_path, "data/preprocessed_seurat_obj.RData"))
+
+# Set colour palette for cell type.
+celltype_col = c("AT1" = "#2f4f4f",
+                 "AT2" = "#00bfff",
+                 "Basal resting" = "#2e8b57",
+                 "Club (non-nasal)" = "#8b008b",
+                 "Deuterosomal" = "#00ff00",
+                 "Endothelial cells" = "#808000",
+                 "Endothelial lympathic" = "#00008b",
+                 "Fibroblasts" = "#ff4500",
+                 "Fibromyocytes" = "#ffa500",
+                 "Immune" = "#f08080",
+                 "Ionocyte" = "#f0e68c",
+                 "Multiciliated (non-nasal)" = "#ff00ff",
+                 "Myofibroblasts" = "#c71585",
+                 "Neuroendocrine" = "#00fa9a",
+                 "Pericytes" = "#ff1493",
+                 "Suprabasal" = "#eee8aa",
+                 "Transitional Club-AT2" = "#9370db",
+                 "VSMCs" = "#00ffff")
+
+# Set new name for Seurat object to be more informative.
+seurat_obj = seurat_cluster
+
+# Collapse different types of endothelial cells into generic endothelial cells.
+grep("Endothelial", seurat_obj$cell_type, value = TRUE) %>% unique()
+seurat_obj$cell_type <- gsub("Endothelial venous|Endothelial capillary|Endothelial arterial", 
+                             "Endothelial cells",
+                             seurat_obj$cell_type)
+
+# Collapse fibroblasts and myofibroblasts into fibroblasts.
+grep("ibroblast", seurat_obj$cell_type, value = TRUE) %>% unique()
+seurat_obj$cell_type <- gsub("Myofibroblasts", 
+                             "Fibroblasts",
+                             seurat_obj$cell_type)
+
+# Set max overlaps to infinity globally.
+options(ggrepel.max.overlaps = Inf)
+
+# Factorize timepoint to arrange it in chronological order.
+seurat_obj$timepoint <- factor(seurat_obj$timepoint, levels = c("Untreated",
+                                                                "Day 3",
+                                                                "Day 7",
+                                                                "Day 14",
+                                                                "Day 28",
+                                                                "Day 42",
+                                                                "Day 63"))
+
+# Set Seurat object idents.
+Idents(seurat_obj) <- "cell_type"
+
+# Remove unneeded objects.
+rm(seurat_cluster)
+```
+
+
+## Build summary table to determine metrics
+
+```{r global cell type proportion summary table}
+# Get the variables of interest.
+summary_table <- (FetchData(seurat_obj,
+                            vars = c("cell_type",
+                                     "orig.ident",
+                                     "replicate",
+                                     "treatment",
+                                     "treatment_dosage", 
+                                     "timepoint",
+                                     "Antxr1",
+                                     "Col1a1"))) 
+# Each timepoint contains unsorted lung tissues from 5 mice.
+
+# Define ANTXR1 expression based on 0 expression threshold.
+summary_table <- summary_table %>% mutate(Antxr1_expressed = Antxr1 > 0)
+
+# Define COL1A1 expression based on 0 expression threshold.
+summary_table <- summary_table %>% mutate(Col1a1_expressed = Col1a1 > 0)
+
+# Calculate total cells per timepoint.
+total_cells_timepoint_mice <- (summary_table %>%
+                                 group_by(orig.ident, timepoint) %>%
+                                 summarise(total_cells_timepoint = n(),
+                                           .groups = "drop"))
+
+# Summarise cell counts per mice per timepoint for each cell type. 
+celltype_timepoint_counts_mice <- (summary_table %>% 
+                                     group_by(orig.ident, cell_type, timepoint) %>%
+                                     summarise(celltype_count = n(),
+                                               Antxr1_total_exprs = sum(Antxr1_expressed),
+                                               Col1a1_total_exprs = sum(Col1a1_expressed),
+                                               .groups = "drop") %>%
+                                     left_join(total_cells_timepoint_mice, 
+                                               by = c("orig.ident", "timepoint")))
+
+# Calculate percentages.
+celltype_timepoint_counts_mice <- (celltype_timepoint_counts_mice %>%
+                                     mutate(celltype_by_totalcells = 
+                                              (celltype_count/total_cells_timepoint)*100,
+                                            Antxr1_by_totalcells =
+                                              (Antxr1_total_exprs/total_cells_timepoint)*100,
+                                            Antxr1_by_celltypes =
+                                              (Antxr1_total_exprs/celltype_count)*100,
+                                            Col1a1_by_totalcells =
+                                              (Col1a1_total_exprs/total_cells_timepoint)*100,
+                                            Col1a1_by_celltypes =
+                                              (Col1a1_total_exprs/celltype_count)*100))
+
+# Calculate summary statistics for the calculated percentages by mice.
+summary_stats <- (celltype_timepoint_counts_mice %>%
+                    group_by(cell_type, timepoint) %>%
+                    summarise(
+                      mean_percent_celltype = mean(celltype_by_totalcells),
+                      sd_percent_celltype = sd(celltype_by_totalcells),
+                      mean_percent_antxr1_total = mean(Antxr1_by_totalcells),
+                      sd_percent_antxr1_total = sd(Antxr1_by_totalcells),
+                      mean_percent_antxr1_celltype = mean(Antxr1_by_celltypes),
+                      sd_percent_antxr1_celltype = sd(Antxr1_by_celltypes),
+                      mean_percent_col1a1_total = mean(Col1a1_by_totalcells),
+                      sd_percent_col1a1_total = sd(Col1a1_by_totalcells),
+                      mean_percent_col1a1_celltype = mean(Col1a1_by_celltypes),
+                      sd_percent_col1a1_celltype = sd(Col1a1_by_celltypes),
+                      n_mice = n(),
+                      se_percent_celltype = sd_percent_celltype / sqrt(n_mice),
+                      se_percent_antxr1_total = sd_percent_antxr1_total / sqrt(n_mice),
+                      se_percent_antxr1_celltype = sd_percent_antxr1_celltype / sqrt(n_mice),
+                      se_percent_col1a1_total = sd_percent_col1a1_total / sqrt(n_mice),
+                      se_percent_col1a1_celltype = sd_percent_col1a1_celltype / sqrt(n_mice),
+                      .groups = "drop"
+                    ))
+
+# Remove unneeded objects.
+rm(total_cells_timepoint_mice)
+```
+
+
+## 1: Global cell type proportion
+
+### 1.1: All cells
+
+```{r UMAP global cell proportion - all cells, warning=FALSE, fig.height=40, fig.width=15, out.width="100%"}
+# Visualize the global cell proportion as a UMAP. 
+p1 <- DimPlot(seurat_obj,
+              reduction = "umap",
+              group.by = "cell_type",
+              split.by = "timepoint",
+              cols = celltype_col,
+              label = TRUE,
+              label.size = 3,
+              label.color = "#02066f",
+              repel = TRUE,
+              order = TRUE,
+              ncol = 2,
+              raster = FALSE) + 
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8),
+        strip.text = element_text(size = 15)) +
+  NoLegend()
+
+# Visualize cell proportion counts as barplot.
+p2 <- celltype_timepoint_counts_mice %>%
+  group_by(cell_type, timepoint) %>%
+  summarise(n = n(),
+            mean = plyr::round_any(mean(celltype_by_totalcells), 
+                                   accuracy = 0.01, 
+                                   f = ceiling),
+            sd = plyr::round_any(sd(celltype_by_totalcells), 
+                                 accuracy = 0.01, 
+                                 f = ceiling),
+            .groups = "drop") %>%
+  mutate(se = plyr::round_any(sd/sqrt(n), accuracy = 0.01, f = ceiling)) %>%
+  ggplot(aes(x = cell_type,
+             y = mean,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  geom_errorbar(aes(ymin = mean-se,
+                    ymax = mean+se),
+                width = 0.4,
+                alpha = 0.9) +
+  geom_text(aes(label = mean,
+                vjust = 0.5, 
+                hjust = -0.8),
+            size = 5,
+            angle = 90) +
+  facet_wrap(~timepoint, ncol = 2) +
+  labs(x = "Cell type", 
+       y = "% mean cell type for each timepoint
+       (Blank = > 0.001 or 0.1%)", 
+       fill = element_blank()) +
+  ylim(0, 100) +
+  scale_fill_manual(values = celltype_col) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 90,
+                                   hjust = 1,
+                                   vjust = 0.5),
+        strip.text = element_text(size = 15))
+
+# Visualize both plots together.
+grid.arrange(p1, p2, ncol = 1)
+```
+
+
+### 1.2: AT2, Fibroblasts, Endothelial cells and VSMCs only
+
+```{r UMAP global cell proportion - selected cells, warning=FALSE, fig.height=40, fig.width=15, out.width="100%"}
+# Define list of cell types for each subgroups.
+AT2 = WhichCells(seurat_obj, idents = c("AT2"))
+fibroblasts = WhichCells(seurat_obj, idents = c("Fibroblasts"))
+endothelial = WhichCells(seurat_obj, idents = c("Endothelial cells"))
+VSMCs = WhichCells(seurat_obj, idents = c("VSMCs"))
+
+# Visualize the global cell proportion as a UMAP. 
+p1 <- DimPlot(seurat_obj,
+              reduction = "umap",
+              group.by = "cell_type",
+              split.by = "timepoint",
+              cells.highlight = list(AT2,
+                                     fibroblasts,
+                                     endothelial,
+                                     VSMCs),
+              cols.highlight = c("#00ffff", "#808000", "#ff4500", "#00bfff"),
+              label = TRUE,
+              label.size = 3,
+              label.color = "#02066f",
+              repel = TRUE,
+              order = TRUE,
+              ncol = 2,
+              raster = FALSE) + 
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8),
+        strip.text = element_text(size = 15)) +
+  NoLegend()
+
+# Visualize cell proportion counts as barplot.
+p2 <- celltype_timepoint_counts_mice %>%
+  dplyr::filter(cell_type %in% c("AT2", 
+                                 "Fibroblasts", 
+                                 "Endothelial cells",
+                                 "VSMCs")) %>%
+  group_by(cell_type, timepoint) %>%
+  summarise(n = n(),
+            mean = plyr::round_any(mean(celltype_by_totalcells), 
+                                   accuracy = 0.01, 
+                                   f = ceiling),
+            sd = plyr::round_any(sd(celltype_by_totalcells), 
+                                 accuracy = 0.01, 
+                                 f = ceiling),
+            .groups = "drop") %>%
+  mutate(se = plyr::round_any(sd/sqrt(n), accuracy = 0.01, f = ceiling)) %>%
+  ggplot(aes(x = cell_type,
+             y = mean,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  geom_errorbar(aes(ymin = mean-se,
+                    ymax = mean+se),
+                width = 0.4,
+                alpha = 0.9) +
+  geom_text(aes(label = mean,
+                vjust = 0.5, 
+                hjust = -0.8),
+            size = 5,
+            angle = 90) +
+  facet_wrap(~timepoint, ncol = 2) +
+  labs(x = "Cell type", 
+       y = "% mean cell type for each timepoint
+       (Blank = > 0.001 or 0.1%)", 
+       fill = element_blank()) +
+  ylim(0, 35) +
+  scale_fill_manual(values = celltype_col) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 45,
+                                   hjust = 1,
+                                   vjust = 1),
+        strip.text = element_text(size = 15))
+
+# Visualize both plots together.
+grid.arrange(p1, p2, ncol = 1)
+```
+
+
+```{r cell proportion line graph - selected cells, warning=FALSE, fig.height=6, fig.width=15, out.width="100%" }
+# Visualize cell proportion counts as line graph.
+celltype_timepoint_counts_mice %>%
+  dplyr::filter(cell_type %in% c("AT2", 
+                                 "Fibroblasts", 
+                                 "Endothelial cells",
+                                 "VSMCs")) %>%
+  group_by(cell_type, timepoint) %>%
+  summarise(n = n(),
+            mean = plyr::round_any(mean(celltype_by_totalcells), 
+                                   accuracy = 0.01, 
+                                   f = ceiling),
+            sd = plyr::round_any(sd(celltype_by_totalcells), 
+                                 accuracy = 0.01, 
+                                 f = ceiling),
+            .groups = "drop") %>%
+  mutate(se = plyr::round_any(sd/sqrt(n), accuracy = 0.01, f = ceiling)) %>%
+  ggplot(aes(x = timepoint,
+             y = mean,
+             group = cell_type,
+             colour = cell_type)) +
+  geom_line(size = 0.7) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean-se,
+                    ymax = mean+se),
+                width = 0.4,
+                alpha = 0.9) +
+  geom_text(aes(label = mean,
+                vjust = 0.5, 
+                hjust = -0.8),
+            size = 5,
+            angle = 0,
+            repel = TRUE) +
+  labs(x = "Timepoint", 
+       y = "% mean cell type for each timepoint
+       (Blank = > 0.001 or 0.1%)", 
+       fill = element_blank()) +
+  ylim(0, 30) +
+  scale_colour_manual(values = celltype_col) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 0,
+                                   hjust = 0.5,
+                                   vjust = 1))
+```
+
+
+## 2: Expression comparisons between treatments
+
+### 2.1: Expression comparisons between bleomycin and control for all cell types
+
+Acta2: a-SMA marker
+Col1a1 & Col1a2: Collagen type I marker
+Col3a1: Collagen type III marker
+Cthrc1: Prognostic biomarker for fibrosis
+
+```{r expression violinplot - treatment vs. all cells, warning=FALSE, fig.height=20, fig.width=15, out.width="100%"}
+# Visualize the expressions of all cell type clusters.
+VlnPlot(seurat_obj, 
+        features = c("Acta2", "Col1a2", "Col3a1", "Col1a1", "Antxr1"), 
+        group.by = "cell_type", 
+        split.by = "treatment",
+        split.plot = FALSE,
+        stack = TRUE,
+        flip = TRUE,
+        same.y.lims = TRUE,
+        ncol = 1,
+        raster = FALSE) +
+  theme(legend.position = "top") +
+  stat_summary(fun.y = median, 
+               geom = "point", 
+               size = 1, 
+               color = "#000001", 
+               position = position_dodge(0.9)) 
+```
+
+
+### 2.2: Expression comparisons between timepoints for all cell types
+
+Acta2: a-SMA marker
+Col1a1 & Col1a2: Collagen type I marker
+Col3a1: Collagen type III marker
+Mmp2: Matrix degrading enzyme
+Cthrc1: Prognostic biomarker for fibrosis
+
+```{r expression violinplot - timepoints vs. all cells, warning=FALSE, fig.height=50, fig.width=15, out.width="100%"}
+# Subset non-zero level expressing cell types
+vln_seu <- subset(seurat_obj, 
+                  idents = c("AT1", "AT2", "AT2 proliferating",
+                             "Endothelial cells", "Endothelial lymphatic",
+                             "Fibroblasts", "Fibromyocytes",
+                             "Immune", "Pericytes", "VSMCs"), 
+                  invert = FALSE)
+
+# Get all the collagen genes.
+grep("^Col{1}[0-9]+", rownames(vln_seu), value = TRUE) %>% unique() %>% sort()
+
+# Create a gene list of non-zero collagen genes.
+col_genes = c("Col1a1", "Col1a2", "Col3a1", "Col4a1", "Col4a2", 
+              "Col4a5", "Col5a1", "Col5a2", "Col6a1", "Col6a2", 
+              "Col6a3", "Col13a1", "Col14a1", "Col16a1", "Col18a1", 
+              "Col23a1")
+
+# Visualize the expressions of all cell type clusters.
+VlnPlot(vln_seu, 
+        features = c("Acta2", col_genes, "Antxr1"), 
+        group.by = "cell_type", 
+        split.by = "timepoint",
+        split.plot = FALSE,
+        stack = TRUE,
+        flip = TRUE,
+        same.y.lims = TRUE,
+        ncol = 1) +
+  theme(legend.position = "top") +
+  stat_summary(fun.y = median, 
+               geom = "point", 
+               size = 1, 
+               color = "#000001", 
+               position = position_dodge(0.9))
+```
+
+
+## 3: ANTXR1 expression 
+
+### 3.1: ANTXR1 expression by global total cells
+
+Acta2: a-SMA marker
+Col1a1 & Col1a2: Collagen type I marker
+Col3a1: Collagen type III marker
+Cthrc1: Prognostic biomarker for fibrosis
+
+```{r ANTXR1 expression by global total cells, warning=FALSE, collapse=TRUE, results="hold", fig.height=18, fig.width=15, out.width="100%"}
+# Visualize the ANTXR1+ cell type clusters.
+FeaturePlot(seurat_obj, 
+            reduction = "umap", 
+            features = "Antxr1",
+            split.by = "timepoint",
+            pt.size = 0.8,
+            label = TRUE,
+            label.size = 3,
+            repel = TRUE,
+            order = TRUE,
+            ncol = 2,
+            cols = c("#d3d3d3", "#edc9af", "#6e260e")) +
+  patchwork::plot_layout(ncol = 3, nrow = 3) +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8),
+        strip.text = element_text(size = 15)) 
+
+# Visualize ANTXR1 expressed by total cells as barplot.
+celltype_timepoint_counts_mice %>%
+  group_by(cell_type, timepoint) %>%
+  summarise(n = n(),
+            mean = plyr::round_any(mean(Antxr1_by_totalcells),
+                                   accuracy = 0.01,
+                                   f = ceiling),
+            sd = plyr::round_any(sd(Antxr1_by_totalcells),
+                                 accuracy = 0.01,
+                                 f = ceiling),
+            .groups = "drop") %>%
+  mutate(se = plyr::round_any(sd/sqrt(n),
+                              accuracy = 0.01,
+                              f = ceiling)) %>%
+  ggplot(aes(x = cell_type,
+             y = mean,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  geom_errorbar(aes(ymin = mean-se,
+                    ymax = mean+se),
+                width = 0.4,
+                alpha = 0.9) +
+  geom_text(aes(label = mean,
+                vjust = 0.5, 
+                hjust = -0.8),
+            size = 5,
+            angle = 90) +
+  facet_wrap(~timepoint) +
+  labs(x = "Cell type", 
+       y = "% ANTXR1+ expressed per total cells for each timepoint
+       (Blank = > 0.001 or 0.1%)", 
+       fill = element_blank()) +
+  ylim(0, 20) +
+  scale_fill_manual(values = celltype_col) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 90,
+                                   hjust = 1,
+                                   vjust = 0.5),
+        strip.text = element_text(size = 15))
+
+# Visualize ANTXR1 expressed by total cells as barplot in selected cell types.
+celltype_timepoint_counts_mice %>%
+  dplyr::filter(cell_type %in% c("AT2", 
+                                 "Fibroblasts", 
+                                 "Endothelial cells",
+                                 "VSMCs")) %>%
+  group_by(cell_type, timepoint) %>%
+  summarise(n = n(),
+            mean = plyr::round_any(mean(Antxr1_by_totalcells),
+                                   accuracy = 0.01,
+                                   f = ceiling),
+            sd = plyr::round_any(sd(Antxr1_by_totalcells),
+                                 accuracy = 0.01,
+                                 f = ceiling),
+            .groups = "drop") %>%
+  mutate(se = plyr::round_any(sd/sqrt(n),
+                              accuracy = 0.01,
+                              f = ceiling)) %>%
+  ggplot(aes(x = cell_type,
+             y = mean,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  geom_errorbar(aes(ymin = mean-se,
+                    ymax = mean+se),
+                width = 0.4,
+                alpha = 0.9) +
+  geom_text(aes(label = mean,
+                vjust = 0.5, 
+                hjust = -0.8),
+            size = 5,
+            angle = 90) +
+  facet_wrap(~timepoint) +
+  labs(x = "Cell type", 
+       y = "% ANTXR1+ expressed per total cells for each timepoint
+       (Blank = > 0.001 or 0.1%)", 
+       fill = element_blank()) +
+  ylim(0, 20) +
+  scale_fill_manual(values = celltype_col) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 45,
+                                   hjust = 1,
+                                   vjust = 1),
+        strip.text = element_text(size = 15))
+```
+
+
+```{r ANTXR1 expression by global total cells - line graph, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Visualize ANTXR1 expressed by total cells as line graph in selected cell types.
+celltype_timepoint_counts_mice %>%
+  dplyr::filter(cell_type %in% c("AT2", 
+                                 "Fibroblasts", 
+                                 "Endothelial cells",
+                                 "VSMCs")) %>%
+  group_by(cell_type, timepoint) %>%
+  summarise(n = n(),
+            mean = plyr::round_any(mean(Antxr1_by_totalcells),
+                                   accuracy = 0.01,
+                                   f = ceiling),
+            sd = plyr::round_any(sd(Antxr1_by_totalcells),
+                                 accuracy = 0.01,
+                                 f = ceiling),
+            .groups = "drop") %>%
+  mutate(se = plyr::round_any(sd/sqrt(n),
+                              accuracy = 0.01,
+                              f = ceiling)) %>%
+  ggplot(aes(x = timepoint,
+             y = mean,
+             group = cell_type,
+             colour = cell_type)) +
+  geom_line(size = 0.7) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean-se,
+                    ymax = mean+se),
+                width = 0.4,
+                alpha = 0.9) +
+  geom_text(aes(label = mean,
+                vjust = 0.5, 
+                hjust = -0.8),
+            size = 5,
+            angle = 0,
+            repel = TRUE) +
+  labs(x = "Timepoint", 
+       y = "% ANTXR1+ expressed per total cells for each timepoint
+       (Blank = > 0.001 or 0.1%)", 
+       fill = element_blank()) +
+  ylim(0, 20) +
+  scale_colour_manual(values = celltype_col) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 0,
+                                   hjust = 0.5,
+                                   vjust = 1))
+```
+
+
+### 3.2: ANTXR1 expression by total cells per cell type
+
+Acta2: a-SMA marker
+Col1a1 & Col1a2: Collagen type I marker
+Col3a1: Collagen type III marker
+Cthrc1: Prognostic biomarker for fibrosis
+
+```{r ANTXR1 expression by total cells per cell type, warning=FALSE, collapse=TRUE, results="hold", fig.height=18, fig.width=15, out.width="100%"}
+# Visualize the ANTXR1+ cell type clusters.
+FeaturePlot(seurat_obj, 
+            reduction = "umap", 
+            features = "Antxr1",
+            split.by = "timepoint",
+            pt.size = 0.8,
+            label = TRUE,
+            label.size = 3,
+            repel = TRUE,
+            order = TRUE,
+            cols = c("#d3d3d3", "#edc9af", "#6e260e")) +
+  patchwork::plot_layout(ncol = 3, nrow = 3) +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8),
+        strip.text = element_text(size = 15)) 
+
+# Visualize ANTXR1 expressed by total cells per cell type as barplot.
+celltype_timepoint_counts_mice %>%
+  group_by(cell_type, timepoint) %>%
+  summarise(n = n(),
+            mean = plyr::round_any(mean(Antxr1_by_celltypes),
+                                   accuracy = 0.01,
+                                   f = ceiling),
+            sd = plyr::round_any(sd(Antxr1_by_celltypes),
+                                 accuracy = 0.01,
+                                 f = ceiling),
+            .groups = "drop") %>%
+  mutate(se = plyr::round_any(sd/sqrt(n),
+                              accuracy = 0.01,
+                              f = ceiling)) %>%
+  ggplot(aes(x = cell_type,
+             y = mean,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  geom_errorbar(aes(ymin = mean-se,
+                    ymax = mean+se),
+                width = 0.4,
+                alpha = 0.9) +
+  geom_text(aes(label = mean,
+                vjust = 0.5, 
+                hjust = -0.8),
+            size = 5,
+            angle = 90) +
+  facet_wrap(~timepoint) +
+  labs(x = "Cell type", 
+       y = "% mean ANTXR1+ expressed per total cells 
+       for each cell type at each timepoint
+       (Blank = > 0.001 or 0.1%)", 
+       fill = element_blank()) +
+  ylim(0, 110) +
+  scale_fill_manual(values = celltype_col) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 90,
+                                   hjust = 1,
+                                   vjust = 0.5),
+        strip.text = element_text(size = 15))
+
+# Visualize ANTXR1 expressed by total cells per cell type as barplot in selected cell types.
+celltype_timepoint_counts_mice %>%
+  dplyr::filter(cell_type %in% c("AT2", 
+                                 "Fibroblasts", 
+                                 "Endothelial cells",
+                                 "VSMCs")) %>%
+  group_by(cell_type, timepoint) %>%
+  summarise(n = n(),
+            mean = plyr::round_any(mean(Antxr1_by_celltypes),
+                                   accuracy = 0.01,
+                                   f = ceiling),
+            sd = plyr::round_any(sd(Antxr1_by_celltypes),
+                                 accuracy = 0.01,
+                                 f = ceiling),
+            .groups = "drop") %>%
+  mutate(se = plyr::round_any(sd/sqrt(n),
+                              accuracy = 0.01,
+                              f = ceiling)) %>%
+  ggplot(aes(x = cell_type,
+             y = mean,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  geom_errorbar(aes(ymin = mean-se,
+                    ymax = mean+se),
+                width = 0.4,
+                alpha = 0.9) +
+  geom_text(aes(label = mean,
+                vjust = 0.5, 
+                hjust = -0.8),
+            size = 5,
+            angle = 90) +
+  facet_wrap(~timepoint) +
+  labs(x = "Cell type", 
+       y = "% mean ANTXR1+ expressed per total cells 
+       for each cell type at each timepoint
+       (Blank = > 0.001 or 0.1%)", 
+       fill = element_blank()) +
+  ylim(0, 110) +
+  scale_fill_manual(values = celltype_col) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 45,
+                                   hjust = 1,
+                                   vjust = 1),
+        strip.text = element_text(size = 15))
+```
+
+
+```{r ANTXR1 expression by total cells per cell type - line graph, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Visualize ANTXR1 expressed by total cells per cell type as line graph in selected cell types.
+celltype_timepoint_counts_mice %>%
+  dplyr::filter(cell_type %in% c("AT2", 
+                                 "Fibroblasts", 
+                                 "Endothelial cells",
+                                 "VSMCs")) %>%
+  group_by(cell_type, timepoint) %>%
+  summarise(n = n(),
+            mean = plyr::round_any(mean(Antxr1_by_celltypes),
+                                   accuracy = 0.01,
+                                   f = ceiling),
+            sd = plyr::round_any(sd(Antxr1_by_celltypes),
+                                 accuracy = 0.01,
+                                 f = ceiling),
+            .groups = "drop") %>%
+  mutate(se = plyr::round_any(sd/sqrt(n),
+                              accuracy = 0.01,
+                              f = ceiling)) %>%
+  ggplot(aes(x = timepoint,
+             y = mean,
+             group = cell_type,
+             colour = cell_type)) +
+  geom_line(size = 0.7) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean-se,
+                    ymax = mean+se),
+                width = 0.4,
+                alpha = 0.9) +
+  geom_text(aes(label = mean,
+                vjust = 0.5, 
+                hjust = -0.8),
+            size = 5,
+            angle = 0,
+            repel = TRUE) +
+  labs(x = "Timepoint", 
+       y = "% mean ANTXR1+ expressed per total cells 
+       for each cell type at each timepoint
+       (Blank = > 0.001 or 0.1%)", 
+       fill = element_blank()) +
+  ylim(0, 110) +
+  scale_colour_manual(values = celltype_col) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 0,
+                                   hjust = 0.5,
+                                   vjust = 1))
+```
+
+
+## 4: ANTXR1 expression comparison - AT2
+
+```{r AT2 ANTXR1+ comparison, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Subset cell type of interest - AT2 cells.
+AT2_cells <- subset(seurat_obj, idents = "AT2", invert = FALSE)
+AT2_cells$treatment <- factor(AT2_cells$treatment, 
+                              levels = c("untreated", 
+                                         "bleomycin administered intratracheally"))
+
+# Make expression comparisons between metadata of interest.
+source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+VlnPlot_stat(object = AT2_cells,
+             gene_signature = c("Antxr1"),
+             test_sign = list(c("Untreated", "Day 3"), 
+                              c("Untreated", "Day 7"),
+                              c("Untreated", "Day 14"),
+                              c("Untreated", "Day 28"),
+                              c("Untreated", "Day 42"),
+                              c("Untreated", "Day 63")),
+             group_name = "timepoint",
+             title = "ANTXR1 pairwise comparisons between control and BLM-treated AT2 cells 
+             at different timepoints",
+             x_angle = 0,
+             hjust = 0.5,
+             vjust = 1) 
+
+# Remove unneeded objects.
+rm(AT2_cells)
+```
+
+
+## 5: ANTXR1 expression comparison - Fibroblasts
+
+```{r Fibroblasts ANTXR1+ comparison, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Subset cell type of interest - Fibroblasts.
+Fibro_cells <- subset(seurat_obj, 
+                      idents = c("Fibroblasts"), 
+                      invert = FALSE)
+Fibro_cells$treatment <- factor(Fibro_cells$treatment, 
+                                levels = c("untreated", 
+                                           "bleomycin administered intratracheally"))
+
+# Make expression comparisons between metadata of interest.
+source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+VlnPlot_stat(object = Fibro_cells,
+             gene_signature = c("Antxr1"),
+             test_sign = list(c("Untreated", "Day 3"), 
+                              c("Untreated", "Day 7"),
+                              c("Untreated", "Day 14"),
+                              c("Untreated", "Day 28"),
+                              c("Untreated", "Day 42"),
+                              c("Untreated", "Day 63")),
+             group_name = "timepoint",
+             title = "ANTXR1 pairwise comparisons between control and BLM-treated fibroblasts 
+             at different timepoints",
+             x_angle = 0,
+             hjust = 0.5,
+             vjust = 1) 
+
+# Remove unneeded objects.
+rm(Fibro_cells)
+```
+
+
+## 6: ANTXR1 expression comparison - Endothelial cells
+
+```{r Endothelial cells ANTXR1+ comparison, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Subset cell type of interest - Endothelial cells.
+EC_cells <- subset(seurat_obj, 
+                   idents = c("Endothelial cells"), 
+                   invert = FALSE)
+EC_cells$treatment <- factor(EC_cells$treatment, 
+                             levels = c("untreated", 
+                                        "bleomycin administered intratracheally"))
+
+# Make expression comparisons between metadata of interest.
+source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+VlnPlot_stat(object = EC_cells,
+             gene_signature = c("Antxr1"),
+             test_sign = list(c("Untreated", "Day 3"), 
+                              c("Untreated", "Day 7"),
+                              c("Untreated", "Day 14"),
+                              c("Untreated", "Day 28"),
+                              c("Untreated", "Day 42"),
+                              c("Untreated", "Day 63")),
+             group_name = "timepoint",
+             title = "ANTXR1 pairwise comparisons between control and BLM-treated 
+             endothelial cells at different timepoints",
+             x_angle = 0,
+             hjust = 0.5,
+             vjust = 1) 
+
+# Remove unneeded objects.
+rm(EC_cells)
+```
+
+
+## 7: ANTXR1 expression comparison - VSMCs
+
+```{r VSMCs ANTXR1+ comparison, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Subset cell type of interest - VSMCs.
+VSMCs <- subset(seurat_obj, 
+                idents = c("VSMCs"), 
+                   invert = FALSE)
+VSMCs$treatment <- factor(VSMCs$treatment, 
+                          levels = c("untreated", 
+                                     "bleomycin administered intratracheally"))
+
+# Make expression comparisons between metadata of interest.
+source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+VlnPlot_stat(object = VSMCs,
+             gene_signature = c("Antxr1"),
+             test_sign = list(c("Untreated", "Day 3"), 
+                              c("Untreated", "Day 7"),
+                              c("Untreated", "Day 14"),
+                              c("Untreated", "Day 28"),
+                              c("Untreated", "Day 42"),
+                              c("Untreated", "Day 63")),
+             group_name = "timepoint",
+             title = "ANTXR1 pairwise comparisons between control and BLM-treated 
+             VSMCs at different timepoints",
+             x_angle = 0,
+             hjust = 0.5,
+             vjust = 1) 
+
+# Remove unneeded objects.
+rm(VSMCs)
+```
+
+
+## 8: DEG analysis 
+
+### 8.1: Set-up data for DEG
+
+```{r DEG - setup}
+# Check if default ident of the Seurat object is cell type. 
+all(Idents(seurat_obj) == seurat_obj$cell_type) # True. Default idents are cell types.
+
+# Create an aggregate variable with cell type and timepoint.
+seurat_obj$deg_variable <- ifelse(seurat_obj$timepoint == "Untreated", 
+                                  paste(seurat_obj$cell_type, 
+                                        seurat_obj$timepoint, 
+                                        sep = "_"),
+                                  paste(seurat_obj$cell_type, 
+                                        "BLM", 
+                                        seurat_obj$timepoint, 
+                                        sep = "_"))
+
+# Aggregate counts based on cell_type, timepoint and accession ID (i.e. mice ID).
+pseudo_seu <- AggregateExpression(seurat_obj,
+                                  assays = "RNA",
+                                  group.by = c("deg_variable", "orig.ident"),
+                                  return.seurat = TRUE)
+
+# Use the new metadata column as the default ident. 
+head(Cells(pseudo_seu))
+
+# Set deg_variable as the default ident.
+Idents(pseudo_seu) <- "deg_variable"
+```
+
+```{r DEG annotation - set up}
+# Connect to AnnotationHub.
+ah <- AnnotationHub()
+
+# Access the Ensembl database for organism.
+ahDb <- query(ah, 
+              pattern = c("Mus musculus", "EnsDb"), 
+              ignore.case = TRUE)
+
+# Acquire the latest annotation files.
+id <- ahDb %>%
+        mcols() %>%
+        rownames() %>%
+        tail(n = 1)
+
+# Download the appropriate Ensembldb database.
+edb <- ah[[id]]
+
+# Extract gene-level information from database.
+annotations <- genes(edb, 
+                     return.type = "data.frame")
+
+# Select annotations of interest.
+annotations <- annotations %>%
+        dplyr::select(gene_id, gene_name, seq_name, gene_biotype, description)
+
+# Remove unneeded objects.
+rm(ah, ahDb, edb, id)
+```
+
+
+### 8.2: DEG - Fibroblasts - BLM day 3 vs. Untreated
+
+```{r DEG - fibroblasts - BLM day 3 vs. untreated, fig.height=8, fig.width=15, out.width="100%"}
+# Find differential expression genes between BLM day 3 and untreated.
+# Positive logFC means ident.1 is upregulated relative to ident.2.
+grep("Fibroblasts", Idents(pseudo_seu), value = TRUE) %>% unique()
+fib_blm3_unt <- FindMarkers(pseudo_seu, 
+                            ident.1 = "Fibroblasts-BLM-Day 3",
+                            ident.2 = "Fibroblasts-Untreated",
+                            test.use = "DESeq2")
+head(fib_blm3_unt, n = 15)
+
+# Filter out genes that are p.adjusted > 0.05.
+dim(fib_blm3_unt)[1] # 32,170 hits before filtering.
+fib_blm3_unt_sig <- fib_blm3_unt[which(fib_blm3_unt$p_val_adj < 0.05),]
+dim(fib_blm3_unt_sig) # 3,327 after filtering for p-adjusted values.
+
+# Add gene annotations to the DEG output.
+fib_blm3_unt_sig <- fib_blm3_unt_sig %>% rownames_to_column("geneID")
+fib_blm3_unt_sig <- dplyr::left_join(fib_blm3_unt_sig, annotations,
+                                     by = c("geneID" = "gene_name"))
+
+# DEG output.
+volcano_input = fib_blm3_unt_sig
+EnhancedVolcano(volcano_input, 
+                volcano_input$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val_adj",
+                selectLab = c(volcano_input[c(volcano_input$p_val_adj < 1e-5 & 
+                                                (volcano_input$avg_log2FC > 2.5 |
+                                                   volcano_input$avg_log2FC < -2.5)),]$geneID,
+                              "Antxr1"),
+                title = "Fibroblasts BLM Day 3 vs. Fibroblasts Untreated",
+                pointSize = 1.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+```
+
+
+### 8.3: DEG - Fibroblasts - BLM day 7 vs. Untreated
+
+```{r DEG - fibroblasts - BLM day 7 vs. untreated, fig.height=8, fig.width=15, out.width="100%"}
+# Find differential expression genes between BLM day 7 and untreated.
+# Positive logFC means ident.1 is upregulated relative to ident.2.
+grep("Fibroblasts", Idents(pseudo_seu), value = TRUE) %>% unique()
+fib_blm7_unt <- FindMarkers(pseudo_seu, 
+                            ident.1 = "Fibroblasts-BLM-Day 7",
+                            ident.2 = "Fibroblasts-Untreated",
+                            test.use = "DESeq2")
+head(fib_blm7_unt, n = 15)
+
+# Filter out genes that are p.adjusted > 0.05.
+dim(fib_blm7_unt)[1] # 32,733 hits before filtering.
+fib_blm7_unt_sig <- fib_blm7_unt[which(fib_blm7_unt$p_val_adj < 0.05),]
+dim(fib_blm7_unt_sig)[1] # 3,956 after filtering for p-adjusted values.
+
+# Add gene annotations to the DEG output.
+fib_blm7_unt_sig <- fib_blm7_unt_sig %>% rownames_to_column("geneID")
+fib_blm7_unt_sig <- dplyr::left_join(fib_blm7_unt_sig, annotations,
+                                     by = c("geneID" = "gene_name"))
+
+# DEG output.
+volcano_input = fib_blm7_unt_sig
+EnhancedVolcano(volcano_input, 
+                volcano_input$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val_adj",
+                selectLab = c(volcano_input[c(volcano_input$p_val_adj < 1e-5 & 
+                                                (volcano_input$avg_log2FC > 2.5 |
+                                                   volcano_input$avg_log2FC < -2.5)),]$geneID,
+                              "Antxr1"),
+                title = "Fibroblasts BLM Day 7 vs. Fibroblasts Untreated",
+                pointSize = 1.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+```
+
+
+### 8.4: DEG - Fibroblasts - BLM day 14 vs. Untreated
+
+```{r DEG - fibroblasts - BLM day 14 vs. untreated, fig.height=8, fig.width=15, out.width="100%"}
+# Find differential expression genes between BLM day 14 and untreated.
+# Positive logFC means ident.1 is upregulated relative to ident.2.
+grep("Fibroblasts", Idents(pseudo_seu), value = TRUE) %>% unique()
+fib_blm14_unt <- FindMarkers(pseudo_seu, 
+                             ident.1 = "Fibroblasts-BLM-Day 14",
+                             ident.2 = "Fibroblasts-Untreated",
+                             test.use = "DESeq2")
+head(fib_blm14_unt, n = 15)
+
+# Filter out genes that are p.adjusted > 0.05.
+dim(fib_blm14_unt)[1] # 32,083 hits before filtering.
+fib_blm14_unt_sig <- fib_blm14_unt[which(fib_blm14_unt$p_val_adj < 0.05),]
+dim(fib_blm14_unt_sig)[1] # 3,235 after filtering for p-adjusted values.
+
+# Add gene annotations to the DEG output.
+fib_blm14_unt_sig <- fib_blm14_unt_sig %>% rownames_to_column("geneID")
+fib_blm14_unt_sig <- dplyr::left_join(fib_blm14_unt_sig, annotations,
+                                      by = c("geneID" = "gene_name"))
+
+# DEG output.
+volcano_input = fib_blm14_unt_sig
+EnhancedVolcano(volcano_input, 
+                volcano_input$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val_adj",
+                selectLab = c(volcano_input[c(volcano_input$p_val_adj < 1e-5 & 
+                                                (volcano_input$avg_log2FC > 2.5 |
+                                                   volcano_input$avg_log2FC < -2.5)),]$geneID,
+                              "Antxr1"),
+                title = "Fibroblasts BLM Day 14 vs. Fibroblasts Untreated",
+                pointSize = 1.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+```
+
+
+### 8.5: DEG - Fibroblasts - BLM day 28 vs. Untreated
+
+```{r DEG - fibroblasts - BLM day 28 vs. untreated, fig.height=8, fig.width=15, out.width="100%"}
+# Find differential expression genes between BLM day 28 and untreated.
+# Positive logFC means ident.1 is upregulated relative to ident.2.
+grep("Fibroblasts", Idents(pseudo_seu), value = TRUE) %>% unique()
+fib_blm28_unt <- FindMarkers(pseudo_seu, 
+                             ident.1 = "Fibroblasts-BLM-Day 28",
+                             ident.2 = "Fibroblasts-Untreated",
+                             test.use = "DESeq2")
+head(fib_blm28_unt, n = 15)
+
+# Filter out genes that are p.adjusted > 0.05.
+dim(fib_blm28_unt)[1] # 32,675 hits before filtering.
+fib_blm28_unt_sig <- fib_blm28_unt[which(fib_blm28_unt$p_val_adj < 0.05),]
+dim(fib_blm28_unt_sig)[1] # 2,810 after filtering for p-adjusted values.
+
+# Add gene annotations to the DEG output.
+fib_blm28_unt_sig <- fib_blm28_unt_sig %>% rownames_to_column("geneID")
+fib_blm28_unt_sig <- dplyr::left_join(fib_blm28_unt_sig, annotations,
+                                      by = c("geneID" = "gene_name"))
+
+# DEG output.
+volcano_input = fib_blm28_unt_sig
+EnhancedVolcano(volcano_input, 
+                volcano_input$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val_adj",
+                selectLab = c(volcano_input[c(volcano_input$p_val_adj < 1e-5 & 
+                                                (volcano_input$avg_log2FC > 2 |
+                                                   volcano_input$avg_log2FC < -2)),]$geneID,
+                              "Antxr1"),
+                title = "Fibroblasts BLM Day 28 vs. Fibroblasts Untreated",
+                pointSize = 1.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+```
+
+
+### 8.6: DEG - Fibroblasts - BLM day 42 vs. Untreated
+
+```{r DEG - fibroblasts - BLM day 42 vs. untreated, fig.height=8, fig.width=15, out.width="100%"}
+# Find differential expression genes between BLM day 42 and untreated.
+# Positive logFC means ident.1 is upregulated relative to ident.2.
+grep("Fibroblasts", Idents(pseudo_seu), value = TRUE) %>% unique()
+fib_blm42_unt <- FindMarkers(pseudo_seu, 
+                             ident.1 = "Fibroblasts-BLM-Day 42",
+                             ident.2 = "Fibroblasts-Untreated",
+                             test.use = "DESeq2")
+head(fib_blm42_unt, n = 15)
+
+# Filter out genes that are p.adjusted > 0.05.
+dim(fib_blm42_unt)[1] # 32,217 hits before filtering.
+fib_blm42_unt_sig <- fib_blm42_unt[which(fib_blm42_unt$p_val_adj < 0.05),]
+dim(fib_blm42_unt_sig)[1] # 2,500 after filtering for p-adjusted values.
+
+# Add gene annotations to the DEG output.
+fib_blm42_unt_sig <- fib_blm42_unt_sig %>% rownames_to_column("geneID")
+fib_blm42_unt_sig <- dplyr::left_join(fib_blm42_unt_sig, annotations,
+                                      by = c("geneID" = "gene_name"))
+
+# DEG output.
+volcano_input = fib_blm42_unt_sig
+EnhancedVolcano(volcano_input, 
+                volcano_input$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val_adj",
+                selectLab = c(volcano_input[c(volcano_input$p_val_adj < 1e-5 & 
+                                                (volcano_input$avg_log2FC > 1.5 |
+                                                   volcano_input$avg_log2FC < -1.5)),]$geneID,
+                              "Antxr1"),
+                title = "Fibroblasts BLM Day 42 vs. Fibroblasts Untreated",
+                pointSize = 1.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+```
+
+
+### 8.7: DEG - Fibroblasts - BLM day 63 vs. Untreated
+
+```{r DEG - fibroblasts - BLM day 63 vs. untreated, fig.height=8, fig.width=15, out.width="100%"}
+# Find differential expression genes between BLM day 63 and untreated.
+# Positive logFC means ident.1 is upregulated relative to ident.2.
+grep("Fibroblasts", Idents(pseudo_seu), value = TRUE) %>% unique()
+fib_blm63_unt <- FindMarkers(pseudo_seu, 
+                             ident.1 = "Fibroblasts-BLM-Day 63",
+                             ident.2 = "Fibroblasts-Untreated",
+                             test.use = "DESeq2")
+head(fib_blm63_unt, n = 15)
+
+# Filter out genes that are p.adjusted > 0.05.
+dim(fib_blm63_unt)[1] # 32,217 hits before filtering.
+fib_blm63_unt_sig <- fib_blm63_unt[which(fib_blm63_unt$p_val_adj < 0.05),]
+dim(fib_blm63_unt_sig)[1] # 2,500 after filtering for p-adjusted values.
+
+# Add gene annotations to the DEG output.
+fib_blm63_unt_sig <- fib_blm63_unt_sig %>% rownames_to_column("geneID")
+fib_blm63_unt_sig <- dplyr::left_join(fib_blm63_unt_sig, annotations,
+                                      by = c("geneID" = "gene_name"))
+
+# DEG output.
+volcano_input = fib_blm63_unt_sig
+EnhancedVolcano(volcano_input, 
+                volcano_input$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val_adj",
+                selectLab = c(volcano_input[c(volcano_input$p_val_adj < 1e-5 & 
+                                                (volcano_input$avg_log2FC > 1 |
+                                                   volcano_input$avg_log2FC < -1)),]$geneID,
+                              "Antxr1"),
+                title = "Fibroblasts BLM Day 63 vs. Fibroblasts Untreated",
+                pointSize = 1.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+```
+
+
+### 8.8: UpSet Plot - DEG Overlap between Comparisons
+
+```{r upset plot, fig.height=10, fig.width=15, out.width="100%"}
+# Combine DEG results as a list.
+deg_list = list(BLM3days_vs_UT = fib_blm3_unt_sig$geneID,
+                BLM7days_vs_UT = fib_blm7_unt_sig$geneID,
+                BLM14days_vs_UT = fib_blm14_unt_sig$geneID,
+                BLM28days_vs_UT = fib_blm28_unt_sig$geneID,
+                BLM42days_vs_UT = fib_blm42_unt_sig$geneID,
+                BLM63days_vs_UT = fib_blm63_unt_sig$geneID)
+head(list_to_matrix(deg_list))
+
+# Make the combination matrix.
+m = make_comb_mat(deg_list)
+m[1:4]
+
+# Plot the interaction in an UpSet plot.
+UpSet(m, set_order = c("BLM3days_vs_UT", 
+                       "BLM7days_vs_UT", 
+                       "BLM14days_vs_UT", 
+                       "BLM28days_vs_UT",
+                       "BLM42days_vs_UT",
+                       "BLM63days_vs_UT"))
+```
+
+
+## References
+
+Analysis codes are adapted from [HBCtraining](https://hbctraining.github.io/scRNA-seq_online/lessons/08_SC_clustering_quality_control.html) and [Ouyang Lab](https://ouyanglab.com/singlecell/clust.html) with credits going to the original authors of the publications cited in the book. 

@@ -1,0 +1,678 @@
+---
+title: "GSE250396_Bleomycin_Lung_Analysis"
+author: "Kendrix Kek"
+date: "2025-02-01"
+output:
+  html_document:
+    theme: sandstone
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, message = FALSE}
+library(GEOquery)
+library(crayon)
+library(tidyverse)
+library(Seurat)
+library(SeuratData)
+library(Azimuth)
+library(patchwork)
+library(Matrix)
+library(RCurl)
+library(DoubletFinder)
+library(scales)
+library(SoupX)
+library(cowplot)
+library(metap)
+library(SingleCellExperiment)
+library(DropletUtils)
+library(AnnotationHub)
+library(HGNChelper)
+library(ensembldb)
+library(multtest)
+library(glmGamPoi)
+library(pbapply)
+library(data.table)
+library(ggrepel)
+library(ggpubr)
+library(stringr)
+library(canvasXpress)
+library(clinfun)
+library(GGally)
+library(gridExtra)
+library(factoextra)
+library(DESeq2)
+library(EnhancedVolcano)
+library(ComplexHeatmap)
+library(limma)
+library(fgsea)
+library(org.Mm.eg.db)
+library(kableExtra)
+```
+
+
+## Experimental design
+
+**GEO Accession**: GSE250396
+
+**Publication Title**: Unpublished
+
+**Authors**: Jason Guo
+
+**Publication**: N/A
+
+---
+
+**Rationale**: Fibrosis, the replacement of healthy tissue with collagen-rich matrix, can occur following injury in almost every organ. Mouse lungs follow stereotyped sequences of fibrogenesis-to-resolution after bleomycin injury, and we reasoned that profiling post-injury histological progression could uncover pro- vs. anti-fibrotic features with functional value for human fibrosis. 
+
+We mapped spatiotemporally-resolved transformations in lung extracellular matrix (ECM) architecture to spatially-resolved, multi-omic data. First, we charted stepwise trajectories of matrix aberration vs. resolution using unsupervised machine learning, denoting a reversible transition in uniform-to-disordered histological architecture. Single-cell sequencing along these trajectories identified temporally-enriched “ECM-secreting” (Csmd1+) and “pro-resolving” (Cd248+) fibroblasts, for which Visium inferred divergent histological signatures and spatial-transcriptional “neighborhoods”. Critically, pro-resolving fibroblast instillation helped ameliorate fibrosis in vivo. Further, fibroblast neighborhood-associated moieties, Serpine2 and Pi16, functionally modulated human lung fibrosis ex vivo. Spatial phenotyping of idiopathic pulmonary fibrosis further uncovered analogous fibroblast subtypes and neighborhoods in human disease. Collectively, these findings establish an atlas of pro-/anti-fibrotic factors underlying lung matrix architecture and implicate fibroblast-centered moieties in modulating fibrotic progression vs. resolution.
+
+**Methodology**: scRNA-seq of unsorted cells from bleomycin-injured mouse lung samples using the 10X genomics platform collected at day 0 (control), day 14 post-injury and day 35 post-injury.
+
+
+## Load pre-processed Seurat object
+
+```{r load pre-processed Seurat objects}
+# Specify project file path. 
+project_path = "/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/scRNAseq_Lung-Fibrosis-Analysis/GSE250396/"
+
+# Load pre-processed Seurat objects.
+load(file = paste0(project_path, "data/preprocessed_seurat_obj.RData"))
+
+# Set colour palette for cell type.
+celltype_col = c("AT1" = "#2f4f4f",
+                 "AT2" = "#00bfff",
+                 "Basal resting" = "#2e8b57",
+                 "Club (non-nasal)" = "#8b008b",
+                 "Deuterosomal" = "#00ff00",
+                 "Endothelial cells" = "#808000",
+                 "Endothelial lympathic" = "#00008b",
+                 "Fibroblasts" = "#ff4500",
+                 "Fibromyocytes" = "#ffa500",
+                 "Immune" = "#f08080",
+                 "Ionocyte" = "#f0e68c",
+                 "Multiciliated (non-nasal)" = "#ff00ff",
+                 "Myofibroblasts" = "#c71585",
+                 "Neuroendocrine" = "#00fa9a",
+                 "Pericytes" = "#ff1493",
+                 "Suprabasal" = "#eee8aa",
+                 "Transitional Club-AT2" = "#9370db",
+                 "VSMCs" = "#00ffff")
+
+# Set new name for Seurat object to be more informative.
+seurat_obj = seurat_cluster
+
+# Collapse different types of endothelial cells into generic endothelial cells.
+grep("Endothelial", seurat_obj$cell_type, value = TRUE) %>% unique()
+seurat_obj$cell_type <- gsub("Endothelial venous|Endothelial capillary|Endothelial arterial", 
+                             "Endothelial cells",
+                             seurat_obj$cell_type)
+
+# Collapse fibroblasts and myofibroblasts into fibroblasts.
+grep("ibroblast", seurat_obj$cell_type, value = TRUE) %>% unique()
+seurat_obj$cell_type <- gsub("Myofibroblasts", 
+                             "Fibroblasts",
+                             seurat_obj$cell_type)
+
+# Set Seurat object idents.
+Idents(seurat_obj) <- "cell_type"
+
+# Set max overlaps to infinity globally.
+options(ggrepel.max.overlaps = Inf)
+
+# Remove unneeded objects.
+rm(seurat_cluster)
+```
+
+
+## Build summary table to determine metrics
+
+```{r global cell type proportion summary table}
+# Get the variables of interest.
+summary_table <- (FetchData(seurat_obj,
+                            vars = c("cell_type", "treatment", "timepoint", "Antxr1"))) 
+# Each timepoint contains unsorted lung tissues from a single mouse.
+
+# Define ANTXR1 expression based on 0 expression threshold.
+summary_table <- summary_table %>% mutate(Antxr1_expressed = Antxr1 > 0)
+
+# Calculate total cells per timepoint.
+total_cells_timepoint <- (summary_table %>%
+                            group_by(timepoint) %>%
+                            summarise(total_cells_timepoint = n(),
+                                      .groups = "drop"))
+
+# Summarise cell counts per timepoint for each cell type. 
+celltype_timepoint_counts <- (summary_table %>% 
+                                group_by(cell_type, timepoint) %>%
+                                summarise(celltype_count = n(),
+                                          Antxr1_total_exprs = sum(Antxr1_expressed),
+                                          .groups = "drop") %>%
+                                left_join(total_cells_timepoint, by = "timepoint"))
+
+# Calculate percentages.
+celltype_timepoint_counts <- (celltype_timepoint_counts %>%
+                                mutate(celltype_by_totalcells = 
+                                         (celltype_count/total_cells_timepoint)*100,
+                                       Antxr1_by_totalcells =
+                                         (Antxr1_total_exprs/total_cells_timepoint)*100,
+                                       Antxr1_by_celltypes =
+                                         (Antxr1_total_exprs/celltype_count)*100))
+  
+# Remove unneeded objects.
+rm(total_cells_timepoint)
+```
+
+
+## 1: Global cell type proportion
+
+### 1.1: All cells
+
+```{r UMAP global cell proportion - all cells, warning=FALSE, fig.height=12, fig.width=15, out.width="100%"}
+# Visualize the global cell proportion as a UMAP. 
+p1 <- DimPlot(seurat_obj,
+              reduction = "umap",
+              group.by = "cell_type",
+              split.by = "timepoint",
+              cols = celltype_col,
+              label = TRUE,
+              label.size = 3,
+              label.color = "#02066f",
+              repel = TRUE,
+              order = TRUE,
+              raster = FALSE) + 
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8),
+        strip.text = element_text(size = 15)) +
+  NoLegend()
+
+# Visualize cell proportion counts as barplot.
+p2 <- celltype_timepoint_counts %>%
+  mutate(celltype_by_totalcells = plyr::round_any(celltype_by_totalcells, 
+                                                  accuracy = 0.01, 
+                                                  f = ceiling)) %>%
+  ggplot(aes(x = cell_type,
+             y = celltype_by_totalcells,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = celltype_by_totalcells,
+                vjust = 0.5,
+                hjust = -0.5),
+            size = 3,
+            angle = 90) +
+  facet_wrap(~timepoint) +
+  labs(x = "Cell type", 
+       y = "% aggregated cell type for each timepoint
+       (Blank = > 0.001 or 0.1%)", 
+       fill = element_blank()) +
+  ylim(0, 100) +
+  scale_fill_manual(values = celltype_col) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 90,
+                                   hjust = 1,
+                                   vjust = 0.5),
+        strip.text = element_text(size = 15))
+
+# Visualize both plots together.
+grid.arrange(p1, p2, ncol = 1)
+```
+
+
+### 1.2: AT2, Fibroblasts, Endothelial cells and VSMCs only
+
+```{r UMAP global cell proportion - selected cells, warning=FALSE, fig.height=12, fig.width=15, out.width="100%"}
+# Define list of cell types for each subgroups.
+AT2 = WhichCells(seurat_obj, idents = c("AT2"))
+fibroblasts = WhichCells(seurat_obj, idents = c("Fibroblasts"))
+endothelial = WhichCells(seurat_obj, idents = c("Endothelial cells"))
+VSMCs = WhichCells(seurat_obj, idents = c("VSMCs"))
+
+# Visualize the global cell proportion as a UMAP. 
+p1 <- DimPlot(seurat_obj,
+              reduction = "umap",
+              group.by = "cell_type",
+              split.by = "timepoint",
+              cells.highlight = list(AT2,
+                                     fibroblasts,
+                                     endothelial,
+                                     VSMCs),
+              cols.highlight = c("#00ffff", "#808000", "#ff4500", "#00bfff"),
+              label = TRUE,
+              label.size = 3,
+              label.color = "#02066f",
+              repel = TRUE,
+              order = TRUE,
+              raster = FALSE) + 
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8),
+        strip.text = element_text(size = 15)) +
+  NoLegend()
+
+# Visualize cell proportion counts as barplot.
+p2 <- celltype_timepoint_counts %>%
+  dplyr::filter(cell_type %in% c("AT2", 
+                                 "Fibroblasts", 
+                                 "Endothelial cells",
+                                 "VSMCs")) %>%
+  mutate(celltype_by_totalcells = plyr::round_any(celltype_by_totalcells, 
+                                                  accuracy = 0.01, 
+                                                  f = ceiling)) %>%
+  ggplot(aes(x = cell_type,
+             y = celltype_by_totalcells,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = celltype_by_totalcells,
+                vjust = 0.5,
+                hjust = -0.5),
+            size = 3,
+            angle = 90) +
+  facet_wrap(~timepoint) +
+  labs(x = "Cell type", 
+       y = "% aggregated cell type for each timepoint
+       (Blank = > 0.001 or 0.1%)", 
+       fill = element_blank()) +
+  ylim(0, 50) +
+  scale_fill_manual(values = celltype_col) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 45,
+                                   hjust = 1,
+                                   vjust = 1),
+        strip.text = element_text(size = 15))
+
+# Visualize both plots together.
+grid.arrange(p1, p2, ncol = 1)
+```
+
+
+## 2: Expression comparisons between treatments
+
+### 2.1: Expression comparisons between bleomycin and control for all cell types
+
+Acta2: a-SMA marker
+Col1a1 & Col1a2: Collagen type I marker
+Col3a1: Collagen type III marker
+Cthrc1: Prognostic biomarker for fibrosis
+
+```{r expression violinplot - treatment vs. all cells, warning=FALSE, fig.height=20, fig.width=15, out.width="100%"}
+# Visualize the expressions of all cell type clusters.
+VlnPlot(seurat_obj, 
+        features = c("Acta2", "Col1a2", "Col3a1", "Col1a1", "Antxr1"), 
+        group.by = "cell_type", 
+        split.by = "treatment",
+        split.plot = FALSE,
+        stack = TRUE,
+        flip = TRUE,
+        same.y.lims = TRUE,
+        ncol = 1,
+        raster = FALSE) +
+  theme(legend.position = "top") +
+  stat_summary(fun.y = median, 
+               geom = "point", 
+               size = 1, 
+               color = "#000001", 
+               position = position_dodge(0.9)) 
+```
+
+
+### 2.2: Expression comparisons between timepoints for all cell types
+
+Acta2: a-SMA marker
+Col1a1 & Col1a2: Collagen type I marker
+Col3a1: Collagen type III marker
+Cthrc1: Prognostic biomarker for fibrosis
+
+```{r expression violinplot - timepoints vs. all cells, warning=FALSE, fig.height=20, fig.width=15, out.width="100%"}
+# Visualize the expressions of all cell type clusters.
+VlnPlot(seurat_obj, 
+        features = c("Acta2", "Col1a2", "Col3a1", "Col1a1", "Antxr1"), 
+        group.by = "cell_type", 
+        split.by = "timepoint",
+        split.plot = FALSE,
+        stack = TRUE,
+        flip = TRUE,
+        same.y.lims = TRUE,
+        ncol = 1) +
+  theme(legend.position = "top") +
+  stat_summary(fun.y = median, 
+               geom = "point", 
+               size = 1, 
+               color = "#000001", 
+               position = position_dodge(0.9))
+```
+
+
+## 3: ANTXR1 expression 
+
+### 3.1: ANTXR1 expression by global total cells
+
+Acta2: a-SMA marker
+Col1a1 & Col1a2: Collagen type I marker
+Col3a1: Collagen type III marker
+Cthrc1: Prognostic biomarker for fibrosis
+
+```{r ANTXR1 expression by global total cells, warning=FALSE, collapse=TRUE, results="hold", fig.height=6, fig.width=15, out.width="100%"}
+# Visualize the ANTXR1+ cell type clusters.
+FeaturePlot(seurat_obj, 
+            reduction = "umap", 
+            features = "Antxr1",
+            split.by = "timepoint",
+            pt.size = 0.8,
+            label = TRUE,
+            label.size = 3,
+            repel = TRUE,
+            order = TRUE,
+            cols = c("#d3d3d3", "#edc9af", "#6e260e")) +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8),
+        strip.text = element_text(size = 15)) 
+
+# Visualize ANTXR1 expressed by total cells as barplot.
+celltype_timepoint_counts %>%
+  mutate(Antxr1_by_totalcells = plyr::round_any(Antxr1_by_totalcells, 
+                                                accuracy = 0.01, 
+                                                f = ceiling)) %>%
+  ggplot(aes(x = cell_type,
+             y = Antxr1_by_totalcells,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = Antxr1_by_totalcells,
+                vjust = 0.5,
+                hjust = -0.5),
+            size = 3,
+            angle = 90) +
+  facet_wrap(~timepoint) +
+  labs(x = "Cell type", 
+       y = "% ANTXR1+ expressed per total cells for each timepoint
+       (Blank = > 0.001 or 0.1%)", 
+       fill = element_blank()) +
+  ylim(0, 50) +
+  scale_fill_manual(values = celltype_col) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 90,
+                                   hjust = 1,
+                                   vjust = 0.5),
+        strip.text = element_text(size = 15))
+
+# Visualize ANTXR1 expressed by total cells as barplot in selected cell types.
+celltype_timepoint_counts %>%
+  dplyr::filter(cell_type %in% c("AT2", 
+                                 "Fibroblasts", 
+                                 "Endothelial cells",
+                                 "VSMCs")) %>%
+  mutate(Antxr1_by_totalcells = plyr::round_any(Antxr1_by_totalcells, 
+                                                accuracy = 0.01, 
+                                                f = ceiling)) %>%
+  ggplot(aes(x = cell_type,
+             y = Antxr1_by_totalcells,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = Antxr1_by_totalcells,
+                vjust = 0.5,
+                hjust = -0.5),
+            size = 3,
+            angle = 90) +
+  facet_wrap(~timepoint) +
+  labs(x = "Cell type", 
+       y = "% ANTXR1+ expressed per total cells for each timepoint
+       (Blank = > 0.001 or 0.1%)", 
+       fill = element_blank()) +
+  ylim(0, 20) +
+  scale_fill_manual(values = celltype_col) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 45,
+                                   hjust = 1,
+                                   vjust = 1),
+        strip.text = element_text(size = 15))
+
+```
+
+
+### 3.2: ANTXR1 expression by total cells per cell type
+
+Acta2: a-SMA marker
+Col1a1 & Col1a2: Collagen type I marker
+Col3a1: Collagen type III marker
+Cthrc1: Prognostic biomarker for fibrosis
+
+```{r ANTXR1 expression by total cells per cell type, warning=FALSE, collapse=TRUE, results="hold", fig.height=6, fig.width=15, out.width="100%"}
+# Visualize the ANTXR1+ cell type clusters.
+FeaturePlot(seurat_obj, 
+            reduction = "umap", 
+            features = "Antxr1",
+            split.by = "timepoint",
+            pt.size = 0.8,
+            label = TRUE,
+            label.size = 3,
+            repel = TRUE,
+            order = TRUE,
+            cols = c("#d3d3d3", "#edc9af", "#6e260e")) +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8),
+        strip.text = element_text(size = 15)) 
+
+# Visualize ANTXR1 expressed by total cells per cell type as barplot.
+celltype_timepoint_counts %>%
+  mutate(Antxr1_by_celltypes = plyr::round_any(Antxr1_by_celltypes, 
+                                                accuracy = 0.01, 
+                                                f = ceiling)) %>%
+  ggplot(aes(x = cell_type,
+             y = Antxr1_by_celltypes,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = Antxr1_by_celltypes,
+                vjust = 0.5,
+                hjust = -0.5),
+            size = 3,
+            angle = 90) +
+  facet_wrap(~timepoint) +
+  labs(x = "Cell type", 
+       y = "% ANTXR1+ expressed per total cells 
+       for each cell type at each timepoint
+       (Blank = > 0.001 or 0.1%)", 
+       fill = element_blank()) +
+  ylim(0, 110) +
+  scale_fill_manual(values = celltype_col) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 90,
+                                   hjust = 1,
+                                   vjust = 0.5),
+        strip.text = element_text(size = 15))
+
+# Visualize ANTXR1 expressed by total cells per cell type as barplot in select cell types.
+celltype_timepoint_counts %>%
+  dplyr::filter(cell_type %in% c("AT2", 
+                                 "Fibroblasts", 
+                                 "Endothelial cells",
+                                 "VSMCs")) %>%
+  mutate(Antxr1_by_celltypes = plyr::round_any(Antxr1_by_celltypes, 
+                                                accuracy = 0.01, 
+                                                f = ceiling)) %>%
+  ggplot(aes(x = cell_type,
+             y = Antxr1_by_celltypes,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = Antxr1_by_celltypes,
+                vjust = 0.5,
+                hjust = -0.5),
+            size = 3,
+            angle = 90) +
+  facet_wrap(~timepoint) +
+  labs(x = "Cell type", 
+       y = "% ANTXR1+ expressed per total cells 
+       for each cell type at each timepoint
+       (Blank = > 0.001 or 0.1%)", 
+       fill = element_blank()) +
+  ylim(0, 110) +
+  scale_fill_manual(values = celltype_col) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 45,
+                                   hjust = 1,
+                                   vjust = 1),
+        strip.text = element_text(size = 15))
+
+```
+
+
+## 4: ANTXR1 expression comparison - AT2
+
+```{r AT2 ANTXR1+ comparison, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Subset cell type of interest - AT2 cells.
+AT2_cells <- subset(seurat_obj, idents = "AT2", invert = FALSE)
+AT2_cells$treatment <- factor(AT2_cells$treatment, levels = c("none (control)", "bleomycin"))
+
+# Make expression comparisons between metadata of interest.
+source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+VlnPlot_stat(object = AT2_cells,
+             gene_signature = c("Antxr1"),
+             test_sign = list(c("post-injury day 0", "post-injury day 14"), 
+                              c("post-injury day 14", "post-injury day 35"),
+                              c("post-injury day 0", "post-injury day 35")),
+             group_name = "timepoint",
+             title = "ANTXR1 pairwise comparisons between control and BLM-treated 
+             AT2 cells at different timepoints",
+             x_angle = 0,
+             hjust = 0.5,
+             vjust = 1) 
+
+VlnPlot_stat(object = AT2_cells,
+             gene_signature = c("Antxr1"),
+             test_sign = list(c("none (control)", "bleomycin")),
+             group_name = "treatment",
+             title = "ANTXR1 pairwise comparisons between control and 
+             BLM-treated AT2 cells",
+             x_angle = 0,
+             hjust = 0.5,
+             vjust = 1)
+
+# Remove unneeded objects.
+rm(AT2_cells)
+```
+
+
+## 5: ANTXR1 expression comparison - Fibroblasts
+
+```{r Fibroblasts ANTXR1+ comparison, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Subset cell type of interest - Fibroblasts.
+Fibro_cells <- subset(seurat_obj, idents = c("Fibroblasts"), invert = FALSE)
+Fibro_cells$treatment <- factor(Fibro_cells$treatment, levels = c("none (control)", "bleomycin"))
+
+# Make expression comparisons between metadata of interest.
+source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+VlnPlot_stat(object = Fibro_cells,
+             gene_signature = c("Antxr1"),
+             test_sign = list(c("post-injury day 0", "post-injury day 14"), 
+                              c("post-injury day 14", "post-injury day 35"),
+                              c("post-injury day 0", "post-injury day 35")),
+             group_name = "timepoint",
+             title = "ANTXR1 pairwise comparisons between control and BLM-treated 
+             fibroblasts at different timepoints",
+             x_angle = 0,
+             hjust = 0.5,
+             vjust = 1) 
+
+VlnPlot_stat(object = Fibro_cells,
+             gene_signature = c("Antxr1"),
+             test_sign = list(c("none (control)", "bleomycin")),
+             group_name = "treatment",
+             title = "ANTXR1 pairwise comparisons between control and 
+             BLM-treated fibroblasts",
+             x_angle = 0,
+             hjust = 0.5,
+             vjust = 1)
+
+# Remove unneeded objects.
+rm(Fibro_cells)
+```
+
+
+## 6: ANTXR1 expression comparison - Endothelial cells
+
+```{r Endothelial cells ANTXR1+ comparison, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Subset cell type of interest - Endothelial cells.
+EC_cells <- subset(seurat_obj, 
+                   idents = c("Endothelial cells"), 
+                   invert = FALSE)
+EC_cells$treatment <- factor(EC_cells$treatment, levels = c("none (control)", "bleomycin"))
+
+# Make expression comparisons between metadata of interest.
+source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+VlnPlot_stat(object = EC_cells,
+             gene_signature = c("Antxr1"),
+             test_sign = list(c("post-injury day 0", "post-injury day 14"), 
+                              c("post-injury day 14", "post-injury day 35"),
+                              c("post-injury day 0", "post-injury day 35")),
+             group_name = "timepoint",
+             title = "ANTXR1 pairwise comparisons between control and BLM-treated 
+             endothelial cells at different timepoints",
+             x_angle = 0,
+             hjust = 0.5,
+             vjust = 1) 
+
+VlnPlot_stat(object = EC_cells,
+             gene_signature = c("Antxr1"),
+             test_sign = list(c("none (control)", "bleomycin")),
+             group_name = "treatment",
+             title = "ANTXR1 pairwise comparisons between control and 
+             BLM-treated endothelial cells",
+             x_angle = 0,
+             hjust = 0.5,
+             vjust = 1)
+
+# Remove unneeded objects.
+rm(EC_cells)
+```
+
+
+## 7: ANTXR1 expression comparison - VSMCs
+
+```{r VSMCs ANTXR1+ comparison, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Subset cell type of interest - VSMCs.
+VSMCs <- subset(seurat_obj, idents = c("VSMCs"), invert = FALSE)
+VSMCs$treatment <- factor(VSMCs$treatment, levels = c("none (control)", "bleomycin"))
+
+# Make expression comparisons between metadata of interest.
+source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+VlnPlot_stat(object = VSMCs,
+             gene_signature = c("Antxr1"),
+             test_sign = list(c("post-injury day 0", "post-injury day 14"), 
+                              c("post-injury day 14", "post-injury day 35"),
+                              c("post-injury day 0", "post-injury day 35")),
+             group_name = "timepoint",
+             title = "ANTXR1 pairwise comparisons between control and BLM-treated 
+             VSMCs at different timepoints",
+             x_angle = 0,
+             hjust = 0.5,
+             vjust = 1) 
+
+VlnPlot_stat(object = VSMCs,
+             gene_signature = c("Antxr1"),
+             test_sign = list(c("none (control)", "bleomycin")),
+             group_name = "treatment",
+             title = "ANTXR1 pairwise comparisons between control and 
+             BLM-treated VSMCs",
+             x_angle = 0,
+             hjust = 0.5,
+             vjust = 1)
+
+# Remove unneeded objects.
+rm(VSMCs)
+```
+
+
+## References
+
+Analysis codes are adapted from [HBCtraining](https://hbctraining.github.io/scRNA-seq_online/lessons/08_SC_clustering_quality_control.html) and [Ouyang Lab](https://ouyanglab.com/singlecell/clust.html) with credits going to the original authors of the publications cited in the book. 
+
+
