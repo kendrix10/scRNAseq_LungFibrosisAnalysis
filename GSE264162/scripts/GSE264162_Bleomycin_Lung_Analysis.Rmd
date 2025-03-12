@@ -75,7 +75,7 @@ Subpopulations of activated endothelial cell are prevalent in lungs of aged mice
 
 <center>
 
-![Fig. 1: Experimental Design](/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/scRNAseq_LungFibrosisAnalysis/GSE264151/plots/Fig.1_Experimental_design.png)
+![Fig. 1: Experimental Design](~/Documents/Work/UnityHealth/Data_Projects/LungFibrosis_WorkingDirectory/GSE264151/plots/Fig.1_Experimental_design.png)
 
 </center>
 
@@ -84,7 +84,7 @@ Subpopulations of activated endothelial cell are prevalent in lungs of aged mice
 
 ```{r load pre-processed seurat objects}
 # Specify project file path. 
-project_path = "/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/scRNAseq_LungFibrosisAnalysis/GSE264162/"
+project_path = "~/Documents/Work/UnityHealth/Data_Projects/scRNAseq_LungFibrosisAnalysis/GSE264162/"
 
 # Load pre-processed Seurat objects.
 load(file = paste0(project_path, "data/preprocessed_seurat_obj.RData"))
@@ -639,7 +639,7 @@ AT2_cells$treatment <- factor(AT2_cells$treatment,
                                          "Bleomycin"))
 
 # Make expression comparisons between metadata of interest.
-source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+source("~/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
 VlnPlot_stat(object = AT2_cells,
              gene_signature = c("Antxr1"),
              test_sign = list(c("Sham", "Bleomycin_Day 14"), 
@@ -669,7 +669,7 @@ Fibro_cells$treatment <- factor(Fibro_cells$treatment,
                                          "Bleomycin"))
 
 # Make expression comparisons between metadata of interest.
-source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+source("~/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
 VlnPlot_stat(object = Fibro_cells,
              gene_signature = c("Antxr1"),
              test_sign = list(c("Sham", "Bleomycin_Day 14"), 
@@ -698,7 +698,7 @@ EC_cells$treatment <- factor(EC_cells$treatment,
                              levels = c("Sham", "Bleomycin"))
 
 # Make expression comparisons between metadata of interest.
-source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+source("~/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
 VlnPlot_stat(object = EC_cells,
              gene_signature = c("Antxr1"),
              test_sign = list(c("Sham", "Bleomycin_Day 14"), 
