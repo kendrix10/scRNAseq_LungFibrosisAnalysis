@@ -58,7 +58,7 @@ library(kableExtra)
 
 ```{r read matrices and create Seurat object}
 # Specify path to supplementary files. 
-supp_file_path = "/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/scRNAseq_LungFibrosisAnalysis/GSE264162/"
+supp_file_path = "~/Documents/Work/UnityHealth/Data_Projects/scRNAseq_LungFibrosisAnalysis/GSE264162/"
 
 # Get unique sample names.
 sample_names = list.files(path = paste0(supp_file_path, "raw_data"), pattern = "GSM", full.names = FALSE)
@@ -1305,7 +1305,7 @@ We can cross-check the reference-based annotation with the ScType annotation for
 
 ```{r prepare data for ScType annotation, out.width="100%", warning=FALSE}
 # Load in ScType functions.
-source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/auto_detect_tissue_type_KK.R")
+source("~/Documents/Work/UnityHealth/Data_Projects/auto_detect_tissue_type_KK.R")
 source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/gene_sets_prepare.R")
 source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/sctype_score_.R")
 
@@ -1466,7 +1466,7 @@ ggplot(n_cells, aes(x = predicted.ann_finest_level, y = n, fill = treatment)) +
   theme(axis.text.x = element_text(size = 8)) 
 
 # Find conserved markers in the alveolar fibroblast cluster.
-source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/technical_scripts/get_conserved_markers.R")
+source("~/Documents/Work/UnityHealth/Data_Projects/technical_scripts/get_conserved_markers.R")
 for (cluster in c("Alveolar fibroblasts", "Peribronchial fibroblasts")) {
   PDGFRA_markers <- get_conserved_markers(seuobj = seurat_cluster,
                                           annotations = annotations,
@@ -1529,7 +1529,7 @@ ggplot(n_cells, aes(x = predicted.ann_finest_level, y = n, fill = treatment)) +
   theme(axis.text.x = element_text(size = 8)) 
 
 # Find conserved markers in the pericytes cluster.
-source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/technical_scripts/get_conserved_markers.R")
+source("~/Documents/Work/UnityHealth/Data_Projects/technical_scripts/get_conserved_markers.R")
 pericytes_markers <- get_conserved_markers(seuobj = seurat_cluster,
                                            annotations = annotations,
                                            cluster = "Pericytes",
@@ -1589,7 +1589,7 @@ ggplot(n_cells, aes(x = predicted.ann_finest_level, y = n, fill = treatment)) +
   theme(axis.text.x = element_text(size = 8)) 
 
 # Find conserved markers in the club (nasal) cluster.
-source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/technical_scripts/get_conserved_markers.R")
+source("~/Documents/Work/UnityHealth/Data_Projects/technical_scripts/get_conserved_markers.R")
 club_markers <- get_conserved_markers(seuobj = seurat_cluster,
                                       annotations = annotations,
                                       cluster = "Club (nasal)",
@@ -1754,9 +1754,8 @@ DimPlot(seurat_cluster,
 
 ```{r save objects}
 save(seurat_cluster, 
-     file = "/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/scRNAseq_LungFibrosisAnalysis/GSE264162/data/preprocessed_seurat_obj.RData")
+     file = paste0(supp_file_path, "data/preprocessed_seurat_obj.RData"))
 ```
-
 
 
 # References

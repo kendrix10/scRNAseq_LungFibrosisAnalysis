@@ -6,13 +6,10 @@
 GSE250396/data/preprocessed_seurat_obj.RData
 GSE264162/data/preprocessed_seurat_obj.RData
 GSE264278/data/preprocessed_seurat_obj.RData
+
+# Ignore redundant/archived/WIP files. 
 GSE250396/scripts/.Rhistory
 GSE264162/scripts/.Rhistory
 GSE264162/scripts/Archive/.Rhistory
-GSE264162/scripts/Archive/GSE264162_Bleomycin_Lung_Analysis_source.html
-GSE264162/scripts/Archive/GSE264162_Bleomycin_Lung_Analysis_v1.html
-GSE264162/scripts/Archive/GSE264162_Bleomycin_Lung_Analysis_v1.Rmd
-GSE264162/scripts/Archive/GSE264162_Bleomycin_Lung_Analysis_v2.html
-GSE264162/scripts/Archive/GSE264162_Bleomycin_Lung_Analysis_v2.Rmd
-GSE264162/scripts/Archive/GSE264162_Bleomycin_Lung_Analysis_v3.Rmd
+GSE264162/scripts/Archive/
 GSE264278/scripts/.Rhistory
