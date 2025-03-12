@@ -78,7 +78,7 @@ We mapped spatiotemporally-resolved transformations in lung extracellular matrix
 
 ```{r load pre-processed Seurat objects}
 # Specify project file path. 
-project_path = "/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/scRNAseq_Lung-Fibrosis-Analysis/GSE250396/"
+project_path = "~/Documents/Work/UnityHealth/Data_Projects/scRNAseq_LungFibrosisAnalysis/GSE250396/"
 
 # Load pre-processed Seurat objects.
 load(file = paste0(project_path, "data/preprocessed_seurat_obj.RData"))
@@ -533,7 +533,7 @@ AT2_cells <- subset(seurat_obj, idents = "AT2", invert = FALSE)
 AT2_cells$treatment <- factor(AT2_cells$treatment, levels = c("none (control)", "bleomycin"))
 
 # Make expression comparisons between metadata of interest.
-source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+source("~/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
 VlnPlot_stat(object = AT2_cells,
              gene_signature = c("Antxr1"),
              test_sign = list(c("post-injury day 0", "post-injury day 14"), 
@@ -569,7 +569,7 @@ Fibro_cells <- subset(seurat_obj, idents = c("Fibroblasts"), invert = FALSE)
 Fibro_cells$treatment <- factor(Fibro_cells$treatment, levels = c("none (control)", "bleomycin"))
 
 # Make expression comparisons between metadata of interest.
-source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+source("~/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
 VlnPlot_stat(object = Fibro_cells,
              gene_signature = c("Antxr1"),
              test_sign = list(c("post-injury day 0", "post-injury day 14"), 
@@ -607,7 +607,7 @@ EC_cells <- subset(seurat_obj,
 EC_cells$treatment <- factor(EC_cells$treatment, levels = c("none (control)", "bleomycin"))
 
 # Make expression comparisons between metadata of interest.
-source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+source("~/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
 VlnPlot_stat(object = EC_cells,
              gene_signature = c("Antxr1"),
              test_sign = list(c("post-injury day 0", "post-injury day 14"), 
@@ -643,7 +643,7 @@ VSMCs <- subset(seurat_obj, idents = c("VSMCs"), invert = FALSE)
 VSMCs$treatment <- factor(VSMCs$treatment, levels = c("none (control)", "bleomycin"))
 
 # Make expression comparisons between metadata of interest.
-source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+source("~/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
 VlnPlot_stat(object = VSMCs,
              gene_signature = c("Antxr1"),
              test_sign = list(c("post-injury day 0", "post-injury day 14"), 

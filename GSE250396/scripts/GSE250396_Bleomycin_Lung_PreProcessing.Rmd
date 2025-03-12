@@ -58,7 +58,7 @@ library(kableExtra)
 
 ```{r read matrices and create Seurat object}
 # Specify path to supplementary files. 
-supp_file_path = "/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/scRNAseq_Lung-Fibrosis-Analysis/GSE250396/"
+supp_file_path = "~/Documents/Work/UnityHealth/Data_Projects/scRNAseq_LungFibrosisAnalysis/GSE250396/"
 
 # Get unique sample names.
 sample_names = list.files(path = paste0(supp_file_path, "raw_data"), pattern = "GSM", full.names = FALSE)
@@ -1213,7 +1213,7 @@ We can cross-check the reference-based annotation with the ScType annotation for
 
 ```{r prepare data for ScType annotation, out.width="100%", warning=FALSE}
 # Load in ScType functions.
-source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/auto_detect_tissue_type_KK.R")
+source("~/Documents/Work/UnityHealth/Data_Projects/auto_detect_tissue_type_KK.R")
 source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/gene_sets_prepare.R")
 source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/sctype_score_.R")
 
@@ -1476,7 +1476,7 @@ DimPlot(seurat_cluster,
 
 ```{r save objects}
 save(seurat_cluster, 
-     file = "/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/scRNAseq_LungFibrosisAnalysis/GSE250396/data/preprocessed_seurat_obj.RData")
+     file = "~/Documents/Work/UnityHealth/Data_Projects/scRNAseq_LungFibrosisAnalysis/GSE250396/data/preprocessed_seurat_obj.RData")
 ```
 
 
