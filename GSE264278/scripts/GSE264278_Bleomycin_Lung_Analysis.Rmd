@@ -76,7 +76,7 @@ library(kableExtra)
 
 ```{r load pre-processed Seurat objects}
 # Specify project file path. 
-project_path = "/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/scRNAseq_LungFibrosisAnalysis/GSE264278/"
+project_path = "~/Documents/Work/UnityHealth/Data_Projects/scRNAseq_LungFibrosisAnalysis/GSE264278/"
 
 # Load pre-processed Seurat objects.
 load(file = paste0(project_path, "data/preprocessed_seurat_obj.RData"))
@@ -822,7 +822,7 @@ AT2_cells$treatment <- factor(AT2_cells$treatment,
                                          "bleomycin administered intratracheally"))
 
 # Make expression comparisons between metadata of interest.
-source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+source("~/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
 VlnPlot_stat(object = AT2_cells,
              gene_signature = c("Antxr1"),
              test_sign = list(c("Untreated", "Day 3"), 
@@ -855,7 +855,7 @@ Fibro_cells$treatment <- factor(Fibro_cells$treatment,
                                            "bleomycin administered intratracheally"))
 
 # Make expression comparisons between metadata of interest.
-source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+source("~/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
 VlnPlot_stat(object = Fibro_cells,
              gene_signature = c("Antxr1"),
              test_sign = list(c("Untreated", "Day 3"), 
@@ -888,7 +888,7 @@ EC_cells$treatment <- factor(EC_cells$treatment,
                                         "bleomycin administered intratracheally"))
 
 # Make expression comparisons between metadata of interest.
-source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+source("~/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
 VlnPlot_stat(object = EC_cells,
              gene_signature = c("Antxr1"),
              test_sign = list(c("Untreated", "Day 3"), 
@@ -921,7 +921,7 @@ VSMCs$treatment <- factor(VSMCs$treatment,
                                      "bleomycin administered intratracheally"))
 
 # Make expression comparisons between metadata of interest.
-source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
+source("~/Documents/Work/UnityHealth/Data_Projects/VlnPlot_stat.R")
 VlnPlot_stat(object = VSMCs,
              gene_signature = c("Antxr1"),
              test_sign = list(c("Untreated", "Day 3"), 
