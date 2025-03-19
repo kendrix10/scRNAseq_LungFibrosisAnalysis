@@ -148,14 +148,14 @@ summary_table <- (FetchData(seurat_obj,
                                      "treatment_dosage", 
                                      "timepoint",
                                      "Antxr1",
-                                     "Col1a1"))) 
+                                     "Krt8"))) 
 # Each timepoint contains unsorted lung tissues from 5 mice.
 
 # Define ANTXR1 expression based on 0 expression threshold.
 summary_table <- summary_table %>% mutate(Antxr1_expressed = Antxr1 > 0)
 
-# Define COL1A1 expression based on 0 expression threshold.
-summary_table <- summary_table %>% mutate(Col1a1_expressed = Col1a1 > 0)
+# Define KRT8 expression based on 0 expression threshold.
+summary_table <- summary_table %>% mutate(Krt8_expressed = Krt8 > 0)
 
 # Calculate total cells per timepoint.
 total_cells_timepoint_mice <- (summary_table %>%
@@ -168,7 +168,7 @@ celltype_timepoint_counts_mice <- (summary_table %>%
                                      group_by(orig.ident, cell_type, timepoint) %>%
                                      summarise(celltype_count = n(),
                                                Antxr1_total_exprs = sum(Antxr1_expressed),
-                                               Col1a1_total_exprs = sum(Col1a1_expressed),
+                                               Krt8_total_exprs = sum(Krt8_expressed),
                                                .groups = "drop") %>%
                                      left_join(total_cells_timepoint_mice, 
                                                by = c("orig.ident", "timepoint")))
@@ -181,10 +181,10 @@ celltype_timepoint_counts_mice <- (celltype_timepoint_counts_mice %>%
                                               (Antxr1_total_exprs/total_cells_timepoint)*100,
                                             Antxr1_by_celltypes =
                                               (Antxr1_total_exprs/celltype_count)*100,
-                                            Col1a1_by_totalcells =
-                                              (Col1a1_total_exprs/total_cells_timepoint)*100,
-                                            Col1a1_by_celltypes =
-                                              (Col1a1_total_exprs/celltype_count)*100))
+                                            Krt8_by_totalcells =
+                                              (Krt8_total_exprs/total_cells_timepoint)*100,
+                                            Krt8_by_celltypes =
+                                              (Krt8_total_exprs/celltype_count)*100))
 
 # Calculate summary statistics for the calculated percentages by mice.
 summary_stats <- (celltype_timepoint_counts_mice %>%
@@ -196,16 +196,16 @@ summary_stats <- (celltype_timepoint_counts_mice %>%
                       sd_percent_antxr1_total = sd(Antxr1_by_totalcells),
                       mean_percent_antxr1_celltype = mean(Antxr1_by_celltypes),
                       sd_percent_antxr1_celltype = sd(Antxr1_by_celltypes),
-                      mean_percent_col1a1_total = mean(Col1a1_by_totalcells),
-                      sd_percent_col1a1_total = sd(Col1a1_by_totalcells),
-                      mean_percent_col1a1_celltype = mean(Col1a1_by_celltypes),
-                      sd_percent_col1a1_celltype = sd(Col1a1_by_celltypes),
+                      mean_percent_krt8_total = mean(Krt8_by_totalcells),
+                      sd_percent_krt8_total = sd(Krt8_by_totalcells),
+                      mean_percent_krt8_celltype = mean(Krt8_by_celltypes),
+                      sd_percent_krt8_celltype = sd(Krt8_by_celltypes),
                       n_mice = n(),
                       se_percent_celltype = sd_percent_celltype / sqrt(n_mice),
                       se_percent_antxr1_total = sd_percent_antxr1_total / sqrt(n_mice),
                       se_percent_antxr1_celltype = sd_percent_antxr1_celltype / sqrt(n_mice),
-                      se_percent_col1a1_total = sd_percent_col1a1_total / sqrt(n_mice),
-                      se_percent_col1a1_celltype = sd_percent_col1a1_celltype / sqrt(n_mice),
+                      se_percent_krt8_total = sd_percent_krt8_total / sqrt(n_mice),
+                      se_percent_krt8_celltype = sd_percent_krt8_celltype / sqrt(n_mice),
                       .groups = "drop"
                     ))
 
