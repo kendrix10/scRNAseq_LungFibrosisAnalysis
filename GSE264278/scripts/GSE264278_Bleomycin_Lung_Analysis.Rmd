@@ -450,10 +450,9 @@ Cthrc1: Prognostic biomarker for fibrosis
 ```{r expression violinplot - timepoints vs. all cells, warning=FALSE, fig.height=50, fig.width=15, out.width="100%"}
 # Subset non-zero level expressing cell types
 vln_seu <- subset(seurat_obj, 
-                  idents = c("AT1", "AT2", "AT2 proliferating",
-                             "Endothelial cells", "Endothelial lymphatic",
-                             "Fibroblasts", "Fibromyocytes",
-                             "Immune", "Pericytes", "VSMCs"), 
+                  idents = c("AT1", "AT2", "Endothelial cells", 
+                             "Endothelial lymphatic",
+                             "Fibroblasts", "Fibromyocytes"), 
                   invert = FALSE)
 
 # Get all the collagen genes.
@@ -475,12 +474,58 @@ VlnPlot(vln_seu,
         flip = TRUE,
         same.y.lims = TRUE,
         ncol = 1) +
-  theme(legend.position = "top") +
+  theme(legend.position = "top",
+        axis.text.x = element_text(angle = 0, hjust = 0.5)) +
   stat_summary(fun.y = median, 
                geom = "point", 
                size = 1, 
                color = "#000001", 
                position = position_dodge(0.9))
+```
+
+
+### 2.3: Expression of fibrosis signalling kinetics 
+
+```{r fibrosis kinetics expression - violinplot, warning=FALSE, message=FALSE, fig.height=9, fig.width=15, out.width="100%"}
+# Subset non-zero level expressing cell types
+vln_seu <- subset(seurat_obj, 
+                  idents = c("AT1", "AT2", "Endothelial cells", 
+                             "Endothelial lymphatic",
+                             "Fibroblasts", "Fibromyocytes"), invert = FALSE)
+
+# Get all the TGFB & PDGF genes.
+grep("^Tgfb+", rownames(vln_seu), value = TRUE) %>% unique() %>% sort()
+grep("^Pdgf+", rownames(vln_seu), value = TRUE) %>% unique() %>% sort()
+
+fibrosis_genes = c("Tgfb1", "Tgfb2", "Tgfb3", "Pdgfa", "Pdgfb", "Ctgf")
+
+# Visualize the level of expressions of fibrosis genes in subsetted cell types.
+VlnPlot(vln_seu, 
+        features = fibrosis_genes, 
+        group.by = "cell_type", 
+        split.by = "timepoint",
+        split.plot = FALSE,
+        stack = TRUE,
+        flip = TRUE,
+        same.y.lims = TRUE,
+        ncol = 1) +
+  theme(legend.position = "top",
+        axis.text.x = element_text(angle = 0, hjust = 0.5)) +
+  stat_summary(fun.y = median, 
+               geom = "point", 
+               size = 1, 
+               color = "#000001", 
+               position = position_dodge(0.9))
+```
+
+```{r fibrosis kinetics expression - dotplot, warning=FALSE, message=FALSE, out.width="100%"}
+# Visualize the degree of expression of fibrosis genes in subsetted cell types.
+fibrosis_genes = c("Ctgf", "Pdgfb", "Pdgfa", "Tgfb3", "Tgfb2", "Tgfb1")
+
+DotPlot(vln_seu,
+        features = fibrosis_genes) +
+  scale_color_gradient2(low = "#c85200", mid = "#cccccc", high = "#366785") +
+  coord_flip()
 ```
 
 
