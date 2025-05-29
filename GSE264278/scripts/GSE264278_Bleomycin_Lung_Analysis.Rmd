@@ -450,10 +450,7 @@ Cthrc1: Prognostic biomarker for fibrosis
 ```{r expression violinplot - timepoints vs. all cells, warning=FALSE, fig.height=50, fig.width=15, out.width="100%"}
 # Subset non-zero level expressing cell types
 vln_seu <- subset(seurat_obj, 
-                  idents = c("AT1", "AT2", "Endothelial cells", 
-                             "Endothelial lymphatic",
-                             "Fibroblasts", "Fibromyocytes"), 
-                  invert = FALSE)
+                  idents = c("AT1", "AT2", "Fibroblasts"), invert = FALSE)
 
 # Get all the collagen genes.
 grep("^Col{1}[0-9]+", rownames(vln_seu), value = TRUE) %>% unique() %>% sort()
@@ -489,9 +486,9 @@ VlnPlot(vln_seu,
 ```{r fibrosis kinetics expression - violinplot, warning=FALSE, message=FALSE, fig.height=9, fig.width=15, out.width="100%"}
 # Subset non-zero level expressing cell types
 vln_seu <- subset(seurat_obj, 
-                  idents = c("AT1", "AT2", "Endothelial cells", 
-                             "Endothelial lymphatic",
-                             "Fibroblasts", "Fibromyocytes"), invert = FALSE)
+                  idents = c("AT1", "AT2", "Fibroblasts"), 
+                  subset = timepoint %in% c("Untreated", "Day 7", "Day 42", "Day 63"),
+                  invert = FALSE)
 
 # Get all the TGFB & PDGF genes.
 grep("^Tgfb+", rownames(vln_seu), value = TRUE) %>% unique() %>% sort()
