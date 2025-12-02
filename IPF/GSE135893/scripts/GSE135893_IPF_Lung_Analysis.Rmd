@@ -1,0 +1,318 @@
+---
+title: "GSE135893 IPF Lung Analysis"
+author: "Kendrix Kek"
+date: "2025-11-19"
+output:
+  html_document:
+    theme: sandstone
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "Z:/Kendrix")
+```
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(here)
+library(DT)
+library(GEOquery)
+library(crayon)
+library(RColorBrewer)
+library(tidyverse)
+library(Seurat)
+library(SeuratData)
+library(Azimuth)
+library(patchwork)
+library(Matrix)
+library(RCurl)
+library(scales)
+library(clustree)
+library(SoupX)
+library(cowplot)
+library(metap)
+library(SingleCellExperiment)
+library(DropletUtils)
+library(AnnotationHub)
+library(HGNChelper)
+library(ensembldb)
+library(multtest)
+library(glmGamPoi)
+library(pbapply)
+library(data.table)
+library(ggrepel)
+library(ggpubr)
+library(stringr)
+library(canvasXpress)
+library(scCustomize)
+library(clinfun)
+library(GGally)
+library(factoextra)
+library(DESeq2)
+library(limma)
+library(EnhancedVolcano)
+library(fgsea)
+library(org.Mm.eg.db)
+library(kableExtra)
+```
+
+
+## Step 1: Load Pre-Processed Seurat Object
+
+```{r load pre-processed Seurat object}
+# Read pre-processed Seurat object.
+obj <- readRDS(file = "Z:/Kendrix/IPF_Lung/GSE135893/processed_data/preprocessed_seurat_obj.rds")
+```
+
+
+## Step 2: Summarize Data Broadly
+
+### Step 2.1: Sample metadata summary
+
+```{r sample metadata summary, out.width="100%"}
+# Pull the sample metadata.
+metadata <- Extract_Sample_Meta(obj, 
+                                sample_name = "Sample_Name", 
+                                variables_include = c("Diagnosis"))
+
+# Define columns to plot.
+columns_incl <- c("Diagnosis")
+
+# Loop through columns to plot and visualize.
+for (col in columns_incl) {
+  p <- ggplot(metadata, aes_string(x = col)) +
+    geom_bar(fill = "darkslategrey", colour = "black") +
+    geom_text(stat = "count", aes(label = after_stat(count)), vjust = -0.5) +
+    labs(title = paste("Distribution of", col, "in GSE135893"),
+         x = col,
+         y = "Count") +
+    theme_bw()
+  
+  print(p)
+}
+```
+
+```{r}
+# Remove unneeded objects.
+rm(col, columns_incl, p, metadata)
+```
+
+
+### Step 2.2: Cell metadata summary
+
+```{r cell metadata summary, out.width="100%"}
+# Pull cell metadata.
+metadata <- obj@meta.data
+
+# Visualize cell counts.
+metadata %>%
+  ggplot(aes(x = cell_type, fill = Diagnosis)) +
+  geom_bar(width = 0.5, position = "dodge") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ggtitle("Cell counts by cell type per condition")
+# Dominated by immune cells. Need to remove to be able to see better.
+
+# Visualize cell counts without immune cells.
+metadata %>%
+  dplyr::filter(cell_type != "Immune") %>%
+  ggplot(aes(x = cell_type, fill = Diagnosis)) +
+  geom_bar(width = 0.5, position = "dodge") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ggtitle("Cell counts by cell type per condition (excl. immune cells)")
+```
+
+
+## Step 3: ANTXR1 Expression
+
+### Step 3.1: Where is it expressed?
+
+```{r ANTXR1 umap expression, warning=FALSE, fig.height=8, fig.width=12, out.width="100%"}
+# ANTXR1 UMAP expression.
+Idents(obj) <- "cell_type"
+FeaturePlot(obj, 
+            reduction = "umap", 
+            features = "ANTXR1",
+            split.by = "Diagnosis",
+            pt.size = 0.8,
+            label = TRUE,
+            label.size = 4,
+            repel = TRUE,
+            order = TRUE,
+            raster = FALSE,
+            cols = c("#d3d3d3", "#edc9af", "#6e260e")) +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8),
+        strip.text = element_text(size = 15)) 
+```
+
+```{r ANTXR1+ expression in fibroblast, out.width="100%"}
+# ANTXR1 expression count.
+antxr1_summary <- (FetchData(obj, vars = c("Sample_Name", "cell_type", "Diagnosis", "ANTXR1")) %>%
+                     mutate(ANTXR1_pos = ANTXR1 > 0,
+                            ANTXR1_neg = ANTXR1 <= 0)
+                   )
+
+# ANTXR1+ fibroblast by conditions.
+antxr1_summary %>%
+  dplyr::filter(cell_type == "Fibroblasts") %>% 
+  ggplot(aes(x = Diagnosis, fill = ANTXR1_pos)) +
+  geom_bar(width = 0.5, position = "dodge") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ggtitle("Number of non-zero ANTXR1+ fibroblasts")
+
+# ANTXR1- fibroblast by conditions.
+antxr1_summary %>%
+  dplyr::filter(cell_type == "Fibroblasts") %>% 
+  ggplot(aes(x = Diagnosis, fill = ANTXR1_neg)) +
+  geom_bar(width = 0.5, position = "dodge") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ggtitle("Number of non-zero ANTXR1- fibroblasts")
+```
+
+
+### Step 3.2: What are the level of ANTXR1 expression?
+
+```{r ANTXR1 expression level, out.width="100%"}
+# Subset fibroblasts only. 
+Idents(obj) <- "cell_type"
+subset_fibroblast <- subset(obj, idents = c("Fibroblasts"), invert = FALSE)
+subset_fibroblast$Diagnosis <- factor(subset_fibroblast$Diagnosis, levels = c("Control", "IPF"))
+
+# Calculate median expression between both conditions.
+expression_level <- (FetchData(subset_fibroblast,
+                                vars = c("cell_type", "Diagnosis", "ANTXR1")) %>%
+                       group_by(Diagnosis) %>%
+                       summarise(median_expression = median(ANTXR1),
+                                 mean_expression = mean(ANTXR1))
+                      )
+print(expression_level)
+
+# Plot violin plot comparing the level of expression between both conditions.
+source("Z:/Kendrix/IPF_Lung/VlnPlot_stat.R")
+VlnPlot_stat(object = subset_fibroblast,
+             gene_signature = c("ANTXR1"),
+             test_sign = list(c("Control", "IPF")),
+             group_name = "Diagnosis",
+             title = "ANTXR1 pairwise comparisons between control and 
+             IPF fibroblasts",
+             x_angle = 0,
+             y_max = 3.5,
+             hjust = 0.5,
+             vjust = 1) 
+```
+
+
+## Step 4: Differential Expression
+
+### Step 4.1: Pseudobulk expression on sample level
+
+```{r prepare pseudobulk data}
+# Check if default ident of the Seurat object is cell type. 
+all(Idents(obj) == obj$cell_type) # True. Default idents are cell types.
+
+# Aggregate counts based on cell_type, condition and accession ID (i.e. mice ID).
+pseudo_seu <- AggregateExpression(obj,
+                                  assays = "RNA",
+                                  group.by = c("cell_type", "Diagnosis", "Sample_Name"),
+                                  return.seurat = TRUE)
+
+# Use the new metadata column as the default ident. 
+head(Cells(pseudo_seu))
+
+# Create an aggregate variable with cell_type and condition.
+pseudo_seu$deg_variable <- paste(pseudo_seu$cell_type, pseudo_seu$Diagnosis, sep = "_")
+
+# Set deg_variable as the default ident.
+Idents(pseudo_seu) <- "deg_variable"
+
+# Connect to AnnotationHub.
+ah <- AnnotationHub()
+
+# Access the Ensembl database for organism.
+ahDb <- query(ah, 
+              pattern = c("Homo sapiens", "EnsDb"), 
+              ignore.case = TRUE)
+
+# Acquire the latest annotation files.
+id <- ahDb %>%
+        mcols() %>%
+        rownames() %>%
+        tail(n = 1)
+
+# Download the appropriate Ensembldb database.
+edb <- ah[[id]]
+
+# Extract gene-level information from database.
+annotations <- genes(edb, 
+                     return.type = "data.frame")
+
+# Select annotations of interest.
+annotations <- annotations %>%
+        dplyr::select(gene_id, gene_name, seq_name, gene_biotype, description)
+
+# Remove unneeded objects.
+rm(ah, ahDb, edb, id)
+```
+
+
+### Step 4.2: Perform differential expression on IPF and control fibroblasts
+
+```{r DEG fibroblast, warning=FALSE, fig.height=8, fig.width=12, out.width="100%"}
+# Find differential expression genes between IPF and control for fibroblasts.
+# Positive logFC means ident.1 is upregulated relative to ident.2.
+grep("Fibroblasts", Idents(pseudo_seu), value = TRUE) %>% unique()
+fibroblasts_deg <- FindMarkers(pseudo_seu,
+                               ident.1 = "Fibroblasts_IPF",
+                               ident.2 = "Fibroblasts_Control",
+                               test.use = "DESeq2")
+
+# Add gene annotations to the DEG output.
+fibroblasts_deg <- (fibroblasts_deg %>% 
+                      rownames_to_column("geneID") %>%
+                      dplyr::left_join(., annotations, by = c("geneID" = "gene_name")))
+
+# Volcano plot.
+EnhancedVolcano(fibroblasts_deg,
+                fibroblasts_deg$geneID,
+                x = "avg_log2FC", 
+                y = "p_val_adj",
+                selectLab = c(fibroblasts_deg[c(fibroblasts_deg$p_val_adj < 1e-5 & 
+                                                (fibroblasts_deg$avg_log2FC > 1.25 |
+                                                   fibroblasts_deg$avg_log2FC < -1.25)),]$geneID,
+                              "ANTXR1"),
+                title = "Control Fibroblasts vs. IPF Fibroblasts",
+                pointSize = 1.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+```
+
+
+### Step 4.3: Explore DEG output
+
+```{r DEG output, out.width="100%"}
+# Explore DEG output.
+datatable(
+  fibroblasts_deg %>% 
+    arrange(p_val_adj, avg_log2FC),
+  caption = "Significantly expressed genes between Control and IPF Fibroblasts",
+  options = list(pageLength = 10, scrollX = TRUE),
+  rownames = FALSE
+) %>%
+  formatRound(columns = c("avg_log2FC"), digits = 3) %>%
+  formatSignif(columns = c("p_val"), digits = 3) %>%
+  formatSignif(columns = c("p_val_adj"), digits = 3)
+```
+
+
+

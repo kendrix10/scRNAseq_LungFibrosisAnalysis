@@ -1,0 +1,946 @@
+---
+title: "GSE264162 Bleomycin Lung Analysis"
+author: "Kendrix Kek"
+date: "2024-07-21"
+output:
+  html_document:
+    theme: sandstone
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, message = FALSE}
+library(GEOquery)
+library(crayon)
+library(tidyverse)
+library(Seurat)
+library(SeuratData)
+library(Azimuth)
+library(patchwork)
+library(Matrix)
+library(RCurl)
+library(DoubletFinder)
+library(reactable)
+library(scales)
+library(SoupX)
+library(cowplot)
+library(SingleCellExperiment)
+library(DropletUtils)
+library(AnnotationHub)
+library(HGNChelper)
+library(ensembldb)
+library(EnhancedVolcano)
+library(multtest)
+library(glmGamPoi)
+library(limma)
+library(pbapply)
+library(data.table)
+library(tidytext)
+library(pheatmap)
+library(ggrepel)
+library(ggpubr)
+library(stringr)
+library(canvasXpress)
+library(clinfun)
+library(GGally)
+library(factoextra)
+library(rstatix)
+library(DESeq2)
+library(limma)
+library(fgsea)
+library(org.Mm.eg.db)
+library(kableExtra)
+```
+
+
+# Experimental design
+
+**GEO Accession**: GSE264162
+
+**Publication Title**: Lung injury-induced activated endothelial cell states persist in aging-associated progressive fibrosis (2024)
+
+**Authors**: Ahmed A. Raslan, Tho X. Pham, Jisu Lee, Konstantinos Kontodimas, Andrew Tilston-Lunel, Jillian Schmottlach, Jeongmin Hong, Taha Dinc, Andreea M. Bujor, Nunzia Caporarello, Aude Thiriot, Ulrich H. von Andrian, Steven K. Huang, Roberto F. Nicosia, Maria Trojanowska, Xaralabos Varelas, Giovanni Ligresti
+
+**Publication**: Nature Communications
+
+---
+
+**Rationale**: Progressive lung fibrosis is associated with poorly understood aging-related endothelial cell dysfunction. Pulmonary fibrosis is characterized by alveolar damage and the accumulation of collagen-producing fibroblasts that contribute to excessive extracellular matrix deposition and loss of organ function. Endothelial cells from aged mouse lungs with sustained fibrosis exhibit reduced expression of endothelial identity genes and increased expression of inflammatory- and fibrosis-associated genes compared to young animals. 
+
+Subpopulations of activated endothelial cell are prevalent in lungs of aged mice and can also be detected in human fibrotic lungs. Longitudinal single cell RNA-sequencing combined with lineage tracing reveal that injury-associated endothelial states transiently appear during the peak of collagen production and vanish during the resolution phase in young lungs. Conversely, endothelial cells derived from aged lungs persist in the activated states and are topologically restricted to fibrotic areas, indicating a failure of the aged vascular endothelial cells to return to quiescence. Differential transcriptional analysis together with pathway evaluation identify putative genes and signaling pathways associated with metabolism, such as glycolysis and oxidative phosphorylation, and upstream regulators, such as MYC, mTOR and YAP/TAZ that likely contribute to the appearance and pathogenic persistence of activated endothelial cells with aging. YAP/TAZ can cooperate with BDNF, a TrkB ligand that is reduced in fibrotic lungs to promote capillary morphogenesis.
+
+**Methodology**: Single-cell RNA profiling of whole lungs of young mice (2 months) and aged mice (18 months) with a single dose of intratracheal bleomycin instillation. Lungs were isolated at the early resolution phase of fibrosis (30 days post-bleomycin) and compared to saline-treated young and aged lungs. 15 distinct lung cell types were defined from approximately 52,542 cells with vascular endothelial cells being ht emost represented cellular subtype. The authors then reclustered the Cdh5+ and Pecam-1+ endothelial cells to identify different endothelial subpopulations. They identified 9 vascular endothelial cell subclusters including those form the veins, arteries, general capillaries (gCap) and aerocytes. Within these subclusters, there were 4 subclusters that emerged exclusively in bleomycin-treated lungs, which were defined as "activated" gCap endothelial cells, "activated" aCap endothelial cells, "activated" arterial endothelial cells and "activated" venous endothelial cells as they shared the common markers of cell activation, including Fxdy5, Spp1, Ankrd37, Lrg1, and Amd1.
+
+<center>
+
+![Fig. 1: Experimental Design](/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/scRNAseq_LungFibrosisAnalysis/GSE264151/plots/Fig.1_Experimental_design.png)
+
+</center>
+
+
+# 1: Global Cell Percentage Changes
+
+## 1.1: Load pre-processed Seurat objects
+
+```{r load pre-processed seurat objects}
+# Specify project file path. 
+project_path = "/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/scRNAseq_LungFibrosisAnalysis/GSE264162/"
+
+# Load pre-processed Seurat objects.
+load(file = paste0(project_path, "data/preprocessed_seurat_obj.RData"))
+
+```
+
+
+## 1.2: Create global cell type proportion table
+
+We want to see the global changes in proportion to interrogate the effects of Bleomycin treatment in young and old mice. The hypothesis is that injury due to Bleomycin will deplete the epithelial cells while the cell mechanism recompense by producing more collagen-producing fibroblasts to help with recovery. 
+
+Credit for the code: Shukai Huang
+
+```{r global cell type proportion summary table - set up}
+# Define columns of interest for exploration. 
+mice_id_col <- "mice_id"
+condition_col <- "comparison_var"
+cell_type_col <- "cell_type"
+cell_types_interest <- c("AT2", "Fibroblasts", "Endothelial", "Smooth muscle")
+
+# Order cell types to put the cell types of interest first.
+ordered_celltype <- c(cell_types_interest, setdiff(unique(seurat_obj$cell_type), cell_types_interest))
+
+# Define conditions and their levels.
+control_condition <- "Sham"
+non_control_conditions <- c("Bleomycin_Day 14", "Bleomycin_Day 35")
+condition_levels <- c("Sham", "Bleomycin_Day 14", "Bleomycin_Day 35")
+
+# Define logfc and p-value threshold.
+logfc_threshold <- 1.0
+pval_threshold <- 0.05
+
+# Standardize column names of interest.
+seurat_obj@meta.data <- (seurat_obj@meta.data %>%
+                           mutate(Group = seurat_obj@meta.data[[condition_col]],
+                                  celltype = seurat_obj@meta.data[[cell_type_col]],
+                                  Mice_ID = seurat_obj@meta.data[[mice_id_col]]))
+```
+
+
+```{r global cell type proportion summary table - build}
+# Get sample metadata.
+meta_data <- FetchData(object = seurat_obj, 
+                       vars = c("Mice_ID", "Group", "celltype", "Antxr1"))
+
+# Define ANTXR1+ and ANTXR1-.
+meta_data <- (meta_data %>%
+                mutate(Antxr1_expressed = Antxr1 > 0))
+
+# Define levels for the variables of interest.
+meta_data$celltype <- factor(meta_data$celltype, 
+                             levels = c(cell_types_interest, 
+                                        setdiff(unique(meta_data$celltype), cell_types_interest)))
+
+meta_data$Group <- factor(meta_data$Group, levels = c(condition_levels))
+str(meta_data)
+
+
+# Define function to build summary tables.
+calculate_metrics <- function(meta_data) {
+  # Calculate metrics per mouse
+  mouse_metrics <- meta_data %>%
+    group_by(Mice_ID, Group) %>%
+    summarise(
+      total_cells_mouse = n(),
+      .groups = "drop"
+    )
+  
+  # Calculate metrics per condition and cell type
+  condition_celltype_metrics <- meta_data %>%
+    group_by(Mice_ID, Group, celltype) %>%
+    summarise(
+      celltype_count = n(),
+      antxr1_positive_count_percelltype = sum(Antxr1_expressed),
+      .groups = "drop"
+    ) %>%
+    left_join(mouse_metrics, by = c("Mice_ID", "Group")) %>%
+    mutate(
+      percent_celltype_of_total = (celltype_count / total_cells_mouse) * 100,
+      percent_antxr1_celltype_of_total = (antxr1_positive_count_percelltype / total_cells_mouse) * 100,
+      percent_antxr1_of_celltype = (antxr1_positive_count_percelltype / celltype_count) * 100
+    )
+  
+   # Calculate summary statistics per condition and cell type
+  summary_stats <- condition_celltype_metrics %>%
+    group_by(Group, celltype) %>%
+    summarise(
+      mean_percent_celltype = mean(percent_celltype_of_total),
+      sd_percent_celltype = sd(percent_celltype_of_total),
+      mean_percent_antxr1_total = mean(percent_antxr1_celltype_of_total),
+      sd_percent_antxr1_total = sd(percent_antxr1_celltype_of_total),
+      mean_percent_antxr1_celltype = mean(percent_antxr1_of_celltype),
+      sd_percent_antxr1_celltype = sd(percent_antxr1_of_celltype),
+      n_mice = n(),
+      se_percent_celltype = sd_percent_celltype / sqrt(n_mice),
+      se_percent_antxr1_total = sd_percent_antxr1_total / sqrt(n_mice),
+      se_percent_antxr1_celltype = sd_percent_antxr1_celltype / sqrt(n_mice),
+      .groups = "drop"
+    )
+  
+  return(list(
+    by_mouse = condition_celltype_metrics,
+    summary = summary_stats
+  ))
+}
+
+# Build summary tables.
+results <- calculate_metrics(meta_data)
+
+# Remove unneeded objects.
+rm(calculate_metrics, cell_type_col, condition_col, control_condition,
+   meta_data, mice_id_col, non_control_conditions, ordered_celltype)
+```
+
+
+## 1.3: Global cell type proportion 
+
+We can visualize the changes over time through the UMAP. 
+
+```{r UMAP global cell proportion, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Visualize the global cell proportion as a UMAP. 
+DimPlot(seurat_obj,
+        reduction = "umap",
+        group.by = "cell_type",
+        split.by = "comparison_var",
+        label = TRUE,
+        label.size = 4,
+        label.color = "#6e260e",
+        repel = TRUE,
+        order = TRUE) + 
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  NoLegend()
+```
+
+We can quantify the changes in cell proportion between the conditions below. 
+
+```{r global cell proportion - quantification, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Define plot.
+create_grouped_barplot <- function(data, y_col, se_col, title, y_label) {
+  ggplot(data, aes(x = celltype, 
+                   y = !!sym(y_col), 
+                   fill = Group)) +
+    geom_bar(stat = "identity", 
+             position = position_dodge(width = 0.9)) +
+    geom_errorbar(aes(ymin = !!sym(y_col) - !!sym(se_col), 
+                      ymax = !!sym(y_col) + !!sym(se_col)),
+                  position = position_dodge(width = 0.9),
+                  width = 0.25) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          plot.title = element_text(hjust = 0.5)) +
+    labs(title = title,
+         y = y_label,
+         x = "Cell Type") +
+    scale_fill_brewer(palette = "Set2")
+}
+
+# Visualize proportion of cell changes over time. 
+plot1 <- create_grouped_barplot(
+  results$summary,
+  "mean_percent_celltype",
+  "se_percent_celltype",
+  "Percentage of Each Cell Type",
+  "% of Total Cells"
+)
+plot1
+
+# Remove unneeded objects.
+rm(plot1)
+```
+
+
+## 1.4: Cell type proportion - AT2, Fibroblasts, Endothelial cells, Smooth muscle cells
+
+```{r cell proportion - selected cell types - UMAP, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Define list of cell types for each subgroups.
+alveolar_epi = WhichCells(seurat_obj, idents = c("AT2", "AT2 proliferating"))
+fibroblasts = WhichCells(seurat_obj, idents = c("Fibroblasts", "Myofibroblasts"))
+endothelial = WhichCells(seurat_obj, idents = c("Endothelial"))
+smc = WhichCells(seurat_obj, idents = c("Smooth muscle"))
+
+# Visualize distribution of AT2, fibroblasts and endothelial cells by timepoints with UMAP.
+DimPlot(seurat_obj,
+        reduction = "umap",
+        split.by = "comparison_var",
+        cells.highlight = list(alveolar_epi,
+                               fibroblasts,
+                               endothelial,
+                               smc),
+        cols.highlight = c("#b51963",
+                           "#c44601",
+                           "#42526e",
+                           "#009e73"),
+        sizes.highlight = 0.2,
+        ncol = 3,
+        label = TRUE,
+        repel = TRUE) + 
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  NoLegend()
+
+# Remove unneeded objects.
+rm(alveolar_epi, endothelial, fibroblasts, smc)
+```
+
+We can quantify the changes in cell proportion of the cell types of interest between the conditions below. 
+
+```{r cell proportion - selected cell types - quantification, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Filter summary stats for cell types of interest.
+filtered_summary <- results$summary %>%
+  filter(celltype %in% cell_types_interest) %>%
+  # Reorder factor levels to match the original order in cell_types_interest.
+  mutate(celltype = factor(celltype, levels = cell_types_interest))
+
+# Visualize the proportion of cell types of interest changes over time. 
+filtered_plot1 <- create_grouped_barplot(
+  filtered_summary,
+  "mean_percent_celltype",
+  "se_percent_celltype",
+  "Percentage of Each Cell Type of Interest",
+  "% of Total Cells"
+)
+filtered_plot1
+
+# Remove unneeded objects.
+rm(filtered_plot1)
+```
+
+
+# 2: The Role of ANTXR1
+
+## 2.1: ANTXR1 expression profile across cell types
+
+```{r ANTXR1 dotplot, fig.height=8, fig.width=15, out.width="100%"}
+# Get matrix from Seurat object.
+source("/Users/kendrix/Documents/Work/UnityHealth/Data_Projects/GetMatrixFromSeuratByGroupSingle.R")
+mat <- GetMatrixFromSeuratByGroupSingle(obj = seurat_obj,
+                                        feature = "Antxr1",
+                                        group1 = cell_type,
+                                        group2 = comparison_var)
+
+# Change any NA values to zero (to enable plotting).
+mat$exp_mat[is.na(mat$exp_mat)] = 0
+mat$percent_mat[is.na(mat$percent_mat)] = 0
+
+# Examine matrix output.
+range(mat$percent_mat, na.rm = TRUE)
+range(mat$exp_mat, na.rm = TRUE)
+quantile(mat$exp_mat, c(0.1, 0.4, 0.8))
+
+# Visualize in a dotplot.
+require(ComplexHeatmap)
+col_fun <- circlize::colorRamp2(c(0, 0.4, 0.8), c("#FDE725FF", "#238A8DFF", "#440154FF"))
+
+layer_fun = function(j, i, x, y, w, h, fill){
+  grid.rect(x = x, y = y, width = w, height = h, gp = gpar(col = "gray", fill = NA))
+  grid.circle(x = x, y = y, r = sqrt(pindex(mat$percent_mat, i, j)) * unit(4.5, "mm"),
+              gp = gpar(fill = col_fun(pindex(mat$exp_mat, i, j)), col = NA))}
+
+hp <- Heatmap(mat$exp_mat,
+              heatmap_legend_param = list(title = "Expression"),
+              column_title = "ANTXR1", 
+              col = col_fun,
+              column_names_gp = gpar(fontsize = 10),
+              rect_gp = gpar(type = "none"),
+              layer_fun = layer_fun,
+              row_names_gp = gpar(fontsize = 15),
+              border = "black",
+              cluster_rows = FALSE, 
+              cluster_columns = FALSE,
+              row_names_side  = "left")
+
+lgd_list = list(Legend(labels = c(0, 10, 25, 50, 75), title = "Percentage",
+                       graphics = list(function(x, y, w, h) 
+                         grid.circle(x = x, y = y, r = 0 * unit(1, "mm"), 
+                                     gp = gpar(fill = "black")),
+                         function(x, y, w, h) grid.circle(x = x, y = y, r = sqrt(0.1) * unit(2, "mm"),
+                                                          gp = gpar(fill = "black")),
+                         function(x, y, w, h) grid.circle(x = x, y = y, r = sqrt(0.25) * unit(2, "mm"),
+                                                          gp = gpar(fill = "black")),
+                         function(x, y, w, h) grid.circle(x = x, y = y, r = sqrt(0.5) * unit(2, "mm"),
+                                                          gp = gpar(fill = "black")),
+                         function(x, y, w, h) grid.circle(x = x, y = y, r = sqrt(0.75) * unit(2, "mm"),
+                                                          gp = gpar(fill = "black"))),
+                       row_gap = unit(1, "mm")))
+
+draw(hp, annotation_legend_list = lgd_list, ht_gap = unit(1, "cm"), annotation_legend_side = "right")
+
+# Remove unneeded objects.
+rm(col_fun, GetMatrixFromSeuratByGroupSingle, hp, layer_fun, lgd_list, mat)
+```
+
+
+## 2.2: ANTXR1 expression UMAP
+
+Let's visualize the cells that are expressing ANTXR1 in comparison with collagen type 1 (Col1a1) and alpha smooth muscle actin (Acta2) expressing cells. 
+
+Similarly, let's visualize the movement of collagen type 1 from the Col1a1-expressing cells to Col1a1-receptor (Ddr1, Ddr2) expressing cells.
+
+Cthrc1 is identified as a common gene expressed in cell types that produce high levels of collagen (i.e. myofibroblast-like).
+
+```{r ANTXR1 UMAP, warning=FALSE, fig.height=18, fig.width=15, out.width="100%"}
+# Visualize the ANTXR1+ cell type clusters.
+FeaturePlot(seurat_obj, 
+            reduction = "umap", 
+            features = c("Antxr1", "Col1a1", "Acta2", "Ddr1", "Ddr2", "Cthrc1"),
+            split.by = "comparison_var",
+            pt.size = 0.8,
+            label = TRUE,
+            label.size = 3,
+            repel = TRUE,
+            order = TRUE,
+            cols = c("#d3d3d3", "#edc9af", "#6e260e")) +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  patchwork::plot_layout(ncol = 3)
+```
+
+
+## 2.3: ANTXR1+ cell type proportion changes - All cell types
+
+```{r ANTXR1+ cell proportion - all cells, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Visualize proportion of ANTXR1+ cells relative to all cells for each condition.
+plot2 <- create_grouped_barplot(
+  results$summary,
+  "mean_percent_antxr1_total",
+  "se_percent_antxr1_total",
+  "Percentage of Antxr1+ Cells of Each Type",
+  "% of Total Cells"
+)
+plot2
+
+# Visualize proportion of ANTXR1+ cells relative to the total cells of the cell type per condition.
+plot3 <- create_grouped_barplot(
+  results$summary,
+  "mean_percent_antxr1_celltype",
+  "se_percent_antxr1_celltype",
+  "Percentage of Antxr1+ Cells Within Each Cell Type",
+  "% of Cells of That Type"
+)
+plot3
+
+# Remove unneeded objects.
+rm(plot2, plot3)
+```
+
+
+## 2.4: ANTXR1+ cell type proportion changes - AT2, Fibroblasts, Endothelial cells
+
+```{r ANTXR1+ cell proportion - selected cells, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Filter summary stats for cell types of interest.
+filtered_summary <- results$summary %>%
+  filter(celltype %in% cell_types_interest) %>%
+  # Reorder factor levels to match the original order in cell_types_interest.
+  mutate(celltype = factor(celltype, levels = cell_types_interest))
+
+# Visualize proportion of ANTXR1+ cells relative to all cells for each condition in cell types of interest only.
+filtered_plot2 <- create_grouped_barplot(
+  filtered_summary,
+  "mean_percent_antxr1_total",
+  "se_percent_antxr1_total",
+  "Percentage of Antxr1+ Cells of Each Type of Interest",
+  "% of Total Cells"
+)
+filtered_plot2
+
+# Visualize proportion of ANTXR1+ cells relative to the total cells of the cell type per condition in cell types of interest only.
+filtered_plot3 <- create_grouped_barplot(
+  filtered_summary,
+  "mean_percent_antxr1_celltype",
+  "se_percent_antxr1_celltype",
+  "Percentage of Antxr1+ Cells Within Each Cell Type of Interest",
+  "% of Cells of That Type"
+)
+filtered_plot3
+
+# Remove unneeded objects.
+rm(filtered_plot2, filtered_plot3)
+```
+
+
+# 3: COL1A2+/- Fibroblasts Analysis
+
+## 3.1: COL1A2+ expression across cell types
+
+```{r COL1A2-expression violin plots, warning=FALSE, fig.height=9, fig.width=15, out.width="100%"}
+# Plot violin plot of COL1A2 expression across different cell types. 
+VlnPlot(seurat_obj, features = c("Antxr1", "Col1a2"), ncol = 1) + NoLegend()
+```
+
+
+## 3.2: COL1A2+/- fibroblasts UMAP
+
+```{r visualize COL1A2+ fibroblasts UMAP, warning=FALSE, fig.height=6, fig.width=15, out.width="100%"}
+# Visualize COL1A2+ UMAP. They should localize in the fibroblast clusters.
+FeaturePlot(seurat_obj, 
+            reduction = "umap", 
+            features = "Col1a2",
+            split.by = "comparison_var",
+            pt.size = 0.8,
+            label = TRUE,
+            label.size = 3,
+            repel = TRUE,
+            order = TRUE,
+            cols = c("#d3d3d3", "#edc9af", "#6e260e")) +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  patchwork::plot_layout(ncol = 3)
+```
+
+
+We can also compare COL1A2+ expression vs COL1A2- expression in all the cell types. 
+
+```{r COL1A2+ vs COL1A2- UMAP - all cell types, warning=FALSE, fig.height=6, fig.width=15, out.width="100%"}
+# Define COL1A2+ and COL1A2- expression in the cell metadata. 
+seurat_obj$Col1a2_status <- ifelse(GetAssayData(seurat_obj)["Col1a2",] > 0,
+                                   "COL1A2+", 
+                                   "COL1A2-")
+
+# Visualize COL1A2+ vs COL1A2- cell types in a UMAP. 
+DimPlot(object = seurat_obj,
+        group.by = "Col1a2_status",
+        cols = c("COL1A2-" = "#66c2a5",
+                 "COL1A2+" = "#fc8d62"),
+        split.by = "Group",
+        ncol = 3) +
+  ggtitle("COL1A2 is mostly expressed in the fibroblast cluster.") +
+  theme(plot.title = element_text(hjust = 0))
+```
+
+
+## 3.3: COL1A2+ fibroblasts vs COL1A2- fibroblasts quantification
+
+First, let's check which cell types express COL1A2, i.e. COL1A2+ cells vs COL1A2- cells. 
+
+```{r set-up COL1A2 expression in fibroblast data}
+# Extract the required columns from the metadata.
+fib_data <- (FetchData(object = seurat_obj, 
+                       vars = c("Mice_ID", "Group", "celltype", "Antxr1", "Col1a2")) %>%
+               dplyr::filter(celltype == "Fibroblasts"))
+
+# Add co-expression indicators and order conditions.
+fib_data <- fib_data %>%
+  mutate(
+    Col1a2_expressed = Col1a2 > 0,
+    Antxr1_expressed = Antxr1 > 0,
+    Group = factor(Group, levels = condition_levels)  # Use predefined condition_levels.
+  )
+```
+
+
+Then, we determine the percentage of COL1A2- and COL1A2+ fibroblasts out of all fibroblasts in the data.
+
+```{r COL1A2 fibroblast percentage table}
+# Calculate the percentage of COL1A2- and COL1A2+ fibroblasts out of all fibroblasts. 
+col1a2_proportions <- fib_data %>%
+  mutate(Group = factor(Group, levels = condition_levels)) %>%
+  group_by(Group) %>%
+  summarise(
+    total_fibroblasts = n(),
+    col1a2_pos = sum(Col1a2_expressed),
+    col1a2_neg = sum(!Col1a2_expressed),
+    percent_pos = (col1a2_pos / total_fibroblasts) * 100,
+    percent_neg = (col1a2_neg / total_fibroblasts) * 100,
+    .groups = "drop"
+  ) %>%
+  # Reshape for plotting
+  pivot_longer(
+    cols = c(percent_pos, percent_neg),
+    names_to = "status",
+    values_to = "percentage"
+  ) %>%
+  mutate(status = ifelse(status == "percent_pos", "COL1A2+", "COL1A2-"))
+```
+
+
+We can visualize the COL1A2+/- percentage in a bar plot. 
+
+```{r COL1A2 fibroblast percentage visualization, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+ggplot(col1a2_proportions, aes(x = Group, y = percentage, fill = status)) +
+  geom_bar(stat = "identity", position = "stack") +
+  theme_bw() +
+  theme(
+    legend.title = element_blank()
+  ) +
+  labs(
+    title = "Proportion of COL1A2- and COL1A2+ Fibroblasts",
+    y = "Percentage",
+    x = "Conditions"
+  ) +
+  scale_fill_manual(values = c("COL1A2-" = "#36454f", "COL1A2+" = "#d3d3d3")) +
+  geom_text(aes(label = sprintf("%.1f%%", percentage)), 
+            position = position_stack(vjust = 0.5))
+```
+
+
+## 3.4: ANTXR1/COL1A2 co-expression in fibroblasts analysis
+
+Next, let's determine the expression of ANTXR1 in COL1A2- and COL1A2+ fibroblasts.
+
+```{r create ANTXR1 expression in COL1A2- vs COL1A2+ fibroblasts tables}
+# Calculate percentage of COL1A2- fibroblasts that express ANTXR1.
+col1a2_stats <- fib_data %>%
+  group_by(Group) %>%
+  summarise(
+    total_col1a2_pos = sum(Col1a2_expressed == TRUE),
+    total_col1a2_neg = sum(Col1a2_expressed == FALSE),
+    antxr1_pos_col1a2_pos = sum(Col1a2_expressed == TRUE & Antxr1_expressed == TRUE),
+    antxr1_pos_col1a2_neg = sum(Col1a2_expressed == FALSE & Antxr1_expressed == TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(Group = factor(Group, levels = condition_levels)) %>%
+  pivot_longer(cols = c(total_col1a2_neg, antxr1_pos_col1a2_neg,
+                        total_col1a2_pos, antxr1_pos_col1a2_pos)) %>%
+  rename("name" = "plotting_var")
+
+# Extract COL1A2+/- fibroblasts information. 
+col1a2_stats$col1a2_fib <- (str_extract(col1a2_stats$plotting_var, 
+                                       "col1a2_neg|col1a2_pos") %>% 
+                              str_replace_all("col1a2_neg", "COL1A2- Fibroblasts") %>% 
+                              str_replace_all("col1a2_pos", "COL1A2+ Fibroblasts")
+                            )
+
+# Relabel plotting variable.
+col1a2_stats$plotting_var <- col1a2_stats$plotting_var %>%
+  str_replace_all("total_col1a2_neg", "Total COL1A2- Fibroblasts") %>%
+  str_replace_all("total_col1a2_pos", "Total COL1A2+ Fibroblasts") %>%
+  str_replace_all("antxr1_pos_col1a2_neg", "ANTXR1-exprs COL1A2- Fibroblasts") %>%
+  str_replace_all("antxr1_pos_col1a2_pos", "ANTXR1-exprs COL1A2+ Fibroblasts")
+
+# Print results.
+cat("\n Percentage of COL1A2+/- fibroblasts expressing ANTXR1: \n")
+print(col1a2_stats)
+
+
+# Calculate average ANTXR1 expression in COL1A2- vs COL1A2+ fibroblasts.
+antxr1_expression_stats <- fib_data %>%
+  group_by(Group, Col1a2_expressed) %>%
+  summarise(
+    n_cells = n(),
+    mean_antxr1 = mean(Antxr1),
+    sd_antxr1 = sd(Antxr1),
+    se_antxr1 = sd_antxr1/sqrt(n_cells),
+    .groups = "drop"
+  ) %>%
+  mutate(Group = factor(Group, levels = condition_levels))  # Use predefined condition_levels.
+
+# Print results.
+cat("\n ANTXR1 expression levels in COL1A2- vs COL1A2+ fibroblasts: \n")
+print(antxr1_expression_stats)
+```
+
+
+Let's visualize plots comparing both expression. 
+
+```{r ANTXR1 expression in COL1A2 fibroblasts plots, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Visualize proportion of ANTXR1 expressing COL1A2- and COL1A2+ fibroblasts.
+ggplot(col1a2_stats, aes(x = Group, y = value, fill = plotting_var)) +
+  geom_bar(position = "stack", stat = "identity") +
+  theme_bw() +
+  labs(title = "Percentage of ANTXR1-expressing COL1A2- and COL1A2+ fibroblasts",
+       y = "% fibroblasts that are ANTXR1-expressing",
+       x = "Condition") +
+  scale_fill_manual(values = c("ANTXR1-exprs COL1A2- Fibroblasts" = "#6e260e", 
+                               "ANTXR1-exprs COL1A2+ Fibroblasts" = "#6e260e",
+                               "Total COL1A2- Fibroblasts" = "#d3d3d3", 
+                               "Total COL1A2+ Fibroblasts" = "#d3d3d3")) +
+  facet_wrap(~col1a2_fib)
+
+
+# Visualize ANTXR1 expression level in COL1A2- and COL1A2+ fibroblasts.
+ggplot(fib_data, aes(x = Group, y = Antxr1, fill = Col1a2_expressed)) +
+  geom_boxplot() +
+  theme_bw() +
+  labs(title = "ANTXR1 expression levels in COL1A2- and COL1A2+ fibroblasts",
+       y = "ANTXR1 expression level",
+       x = "Condition",
+       fill = "COL1A2\nexpressed") +
+  scale_fill_brewer(palette = "Set2") +
+  scale_y_log10()
+```
+
+
+# 4: ANTXR1 Expression in ACTA2 Fibroblasts
+
+## 4.1: ACTA2+ fibroblasts UMAP
+
+```{r visualize ACTA2+ fibroblasts UMAP, warning=FALSE, fig.height=6, fig.width=15, out.width="100%"}
+# Visualize ACTA2+ fibroblast in UMAP. They should localize in the fibroblast clusters.
+FeaturePlot(seurat_obj, 
+            reduction = "umap", 
+            features = "Acta2",
+            split.by = "comparison_var",
+            pt.size = 0.8,
+            label = TRUE,
+            label.size = 3,
+            repel = TRUE,
+            order = TRUE,
+            cols = c("#d3d3d3", "#edc9af", "#6e260e")) +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  patchwork::plot_layout(ncol = 3)
+```
+
+
+We can also compare ACTA+ expression vs ACTA- expression in all the cell types. 
+
+```{r ACTA2+ vs ACTA2- UMAP - fibroblast cluster, warning=FALSE, fig.height=6, fig.width=15, out.width="100%"}
+# First subset to get only cells in the fibroblast clusters.
+fib_obj <- subset(seurat_obj, celltype %in% c("Fibroblasts", "Myofibroblasts",
+                                              "Fibromyocytes", "Smooth muscle"))
+
+# Define ACTA2+ and ACTA2- expression in the cell metadata. 
+fib_obj$Acta2_status <- ifelse(GetAssayData(fib_obj)["Acta2",] > 0,
+                               "ACTA2+", 
+                               "ACTA2-")
+
+# Visualize ACTA2+ vs ACTA2- cell types in a UMAP. 
+Idents(fib_obj) <- "celltype"
+DimPlot(object = fib_obj,
+        group.by = "Acta2_status",
+        cols = c("ACTA2-" = "#66c2a5",
+                 "ACTA2+" = "#fc8d62"),
+        split.by = "Group",
+        ncol = 3) +
+  ggtitle("ACTA2 is expressed by fibroblasts, myofibroblasts, fibromyocytes, and smooth muscle") +
+  theme(plot.title = element_text(hjust = 0))
+```
+
+
+## 4.2: ACTA2 level of expression
+
+```{r ACTA2-expression violin plots, warning=FALSE, fig.height=9, fig.width=15, out.width="100%"}
+# Plot violin plot of ACTA2 expression across different cell types. 
+VlnPlot(seurat_obj, features = c("Acta2", "Col1a2"), ncol = 1) + NoLegend()
+```
+
+
+## 3.3: ACTA2+ fibroblasts vs ACTA2- fibroblasts quantification
+
+First, let's check which cell types express ACTA2, i.e. ACTA2+ cells vs ACTA2- cells. 
+
+```{r set-up ACTA2 expression in fibroblast data}
+# Extract the required columns from the metadata.
+fib_data <- (FetchData(object = seurat_obj, 
+                       vars = c("Mice_ID", "Group", "celltype", "Acta2", "Col1a2")) %>%
+               dplyr::filter(celltype %in% c("Fibroblasts", "Myofibroblasts",
+                                             "Fibromyocytes", "Smooth muscle")))
+
+# Add co-expression indicators and order conditions.
+fib_data <- fib_data %>%
+  mutate(
+    Col1a2_expressed = Col1a2 > 0,
+    Acta2_expressed = Acta2 > 0,
+    Group = factor(Group, levels = condition_levels)  # Use predefined condition_levels.
+  )
+```
+
+
+Then, we determine the percentage of ACTA2- and ACTA2+ fibroblasts out of all fibroblasts in the data.
+
+```{r ACTA2 fibroblast percentage table}
+# Calculate the percentage of ACTA2- and ACTA2+ fibroblasts out of all fibroblasts. 
+acta2_proportions <- fib_data %>%
+  group_by(celltype) %>%
+  summarise(
+    total_fibroblasts = n(),
+    acta2_pos = sum(Acta2_expressed),
+    acta2_neg = sum(!Acta2_expressed),
+    percent_pos = (acta2_pos / total_fibroblasts) * 100,
+    percent_neg = (acta2_neg / total_fibroblasts) * 100,
+    .groups = "drop"
+  ) %>%
+  # Reshape for plotting
+  pivot_longer(
+    cols = c(percent_pos, percent_neg),
+    names_to = "status",
+    values_to = "percentage"
+  ) %>%
+  mutate(status = ifelse(status == "percent_pos", "ACTA2+", "ACTA2-"))
+```
+
+
+We can visualize the ACTA+/- percentage in a bar plot. 
+
+```{r ACTA fibroblast percentage visualization, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+ggplot(acta2_proportions, aes(x = celltype, y = percentage, fill = status)) +
+  geom_bar(stat = "identity", position = "stack") +
+  theme_bw() +
+  theme(
+    legend.title = element_blank()
+  ) +
+  labs(
+    title = "Proportion of ACTA2- and ACTA2+ Fibroblasts",
+    y = "Percentage",
+    x = "Cell Type"
+  ) +
+  scale_fill_manual(values = c("ACTA2-" = "#36454f", "ACTA2+" = "#d3d3d3")) +
+  geom_text(aes(label = sprintf("%.1f%%", percentage)), 
+            position = position_stack(vjust = 0.5))
+```
+
+
+## 3.4: ACTA2/COL1A2 co-expression in fibroblasts analysis
+
+Next, let's determine the expression of COL1A2 in ACTA2- and ACTA2+ fibroblasts.
+
+```{r create COL1A2 expression in ACTA2- vs ACTA2+ fibroblasts tables}
+# Calculate percentage of ACTA2- fibroblasts that express COL1A2.
+acta2_stats <- fib_data %>%
+  group_by(Group) %>%
+  summarise(
+    total_acta2_pos = sum(Acta2_expressed == TRUE),
+    total_acta2_neg = sum(Acta2_expressed == FALSE),
+    col1a2_pos_acta2_pos = sum(Col1a2_expressed == TRUE & Acta2_expressed == TRUE),
+    col1a2_pos_acta2_neg = sum(Col1a2_expressed == FALSE & Acta2_expressed == TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(Group = factor(Group, levels = condition_levels)) %>%
+  pivot_longer(cols = c(total_acta2_neg, col1a2_pos_acta2_neg,
+                        total_acta2_pos, col1a2_pos_acta2_pos)) %>%
+  rename("name" = "plotting_var")
+
+# Extract ACTA2+/- fibroblasts information. 
+acta2_stats$acta2_fib <- (str_extract(acta2_stats$plotting_var, 
+                                      "acta2_neg|acta2_pos") %>% 
+                              str_replace_all("acta2_neg", "ACTA2- Fibroblasts") %>% 
+                              str_replace_all("acta2_pos", "ACTA2+ Fibroblasts")
+                            )
+
+# Relabel plotting variable.
+acta2_stats$plotting_var <- acta2_stats$plotting_var %>%
+  str_replace_all("total_acta2_neg", "Total ACTA2- Fibroblasts") %>%
+  str_replace_all("total_acta2_pos", "Total ACTA2+ Fibroblasts") %>%
+  str_replace_all("col1a2_pos_acta2_neg", "COL1A2-exprs ACTA2- Fibroblasts") %>%
+  str_replace_all("col1a2_pos_acta2_pos", "COL1A2-exprs ACTA2+ Fibroblasts")
+
+# Print results.
+cat("\n Percentage of ACTA2+/- fibroblasts expressing COL1A2: \n")
+print(acta2_stats)
+
+# Calculate average COL1A2 expression in ACTA2- vs ACTA2+ fibroblasts.
+acta2_expression_stats <- fib_data %>%
+  group_by(Group, Acta2_expressed) %>%
+  summarise(
+    n_cells = n(),
+    mean_col1a2 = mean(Col1a2),
+    sd_col1a2 = sd(Col1a2),
+    se_col1a2 = sd_col1a2/sqrt(n_cells),
+    .groups = "drop"
+  ) %>%
+  mutate(Group = factor(Group, levels = condition_levels))  # Use predefined condition_levels.
+
+# Print results.
+cat("\n COL1A2 expression levels in ACTA2- vs ACTA2+ fibroblasts: \n")
+print(acta2_expression_stats)
+```
+
+
+Let's visualize plots comparing both expression. 
+
+```{r COL1A2 expression in ACTA2-/+ fibroblasts plots, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Visualize proportion of COL1A2 expressing ACTA2- and ACTA2+ fibroblasts.
+ggplot(acta2_stats, aes(x = Group, y = value, fill = plotting_var)) +
+  geom_bar(position = "stack", stat = "identity") +
+  theme_bw() +
+  labs(title = "Percentage of COL1A2-expressing ACTA2- and ACTA2+ fibroblasts",
+       y = "% fibroblasts that are COL1A2-expressing",
+       x = "Condition") +
+  scale_fill_manual(values = c("COL1A2-exprs ACTA2- Fibroblasts" = "#6e260e", 
+                               "COL1A2-exprs ACTA2+ Fibroblasts" = "#6e260e",
+                               "Total ACTA2- Fibroblasts" = "#d3d3d3", 
+                               "Total ACTA2+ Fibroblasts" = "#d3d3d3")) +
+  facet_wrap(~acta2_fib)
+
+# Visualize COL1A2 expression level in ACTA2- and ACTA2+ fibroblasts.
+ggplot(fib_data, aes(x = Group, y = Col1a2, fill = Acta2_expressed)) +
+  geom_boxplot() +
+  theme_bw() +
+  labs(title = "COL1A2 expression levels in ACTA2- and ACTA2+ fibroblasts",
+       y = "COL1A2 expression level",
+       x = "Condition",
+       fill = "ACTA2\nexpressed") +
+  scale_fill_brewer(palette = "Set2") +
+  scale_y_log10()
+```
+
+
+# 5: ANXA2 and ANTXR1 Co-expression
+
+## 5.1: ANXA2+ ANTXR1+ co-expression contingency table
+
+```{r ANXA2 and ANTXR1 co-expression table}
+# Extract the required columns from the metadata.
+meta_data <- (FetchData(object = seurat_obj, 
+                        vars = c("Mice_ID", "Group", "celltype", "Antxr1", "Anxa2")))
+
+# Add co-expression indicators and order conditions.
+meta_data <- meta_data %>%
+  mutate(
+    Anxa2_expressed = Anxa2 > 0,
+    Antxr1_expressed = Antxr1 > 0,
+    Group = factor(Group, levels = condition_levels)  # Use predefined condition_levels.
+  )
+
+# Display contingency table for co-expression. 
+table(meta_data$Antxr1_expressed, meta_data$Anxa2_expressed)
+
+# Create an aggregated contingency table. 
+meta_data$Antxr1_Anxa2_coexpressed <- ifelse(meta_data$Anxa2_expressed == TRUE & meta_data$Antxr1_expressed == TRUE,
+                                             TRUE,
+                                             FALSE)
+
+# Create coexpression contingency table. 
+table(meta_data$celltype, meta_data$Antxr1_Anxa2_coexpressed)
+```
+
+
+## 5.2: ANXA2+ ANTXR1+ expression UMAP
+
+```{r visualize ANXA2+ ANTXR1+ UMAP, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Visualize ANXA2+ ANTXR1+ co-expression UMAP. 
+FeaturePlot(seurat_obj, 
+            reduction = "umap", 
+            features = c("Antxr1", "Anxa2"),
+            split.by = "comparison_var",
+            pt.size = 0.8,
+            label = TRUE,
+            label.size = 3,
+            repel = TRUE,
+            order = TRUE,
+            cols = c("#d3d3d3", "#edc9af", "#6e260e")) +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  patchwork::plot_layout(ncol = 3)
+```
+
+
+## 5.3: ANXA2+ ANTXR1+ expression levels
+
+```{r visualize ANXA2+ ANTXR1+ expression levels, warning=FALSE, fig.height=8.5, fig.width=15, out.width="100%"}
+# Plot violin plot of ANXA2+ ANTXR1+ co-expression across different cell types. 
+VlnPlot(seurat_obj, features = c("Antxr1", "Anxa2"), ncol = 1) + 
+  NoLegend()
+```
+
+
+
+# References
+
+Analysis codes are adapted from [HBCtraining](https://hbctraining.github.io/scRNA-seq_online/lessons/08_SC_clustering_quality_control.html) and [Ouyang Lab](https://ouyanglab.com/singlecell/clust.html) with credits going to the original authors of the publications cited in the book. 
+

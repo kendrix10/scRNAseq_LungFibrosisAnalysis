@@ -1,0 +1,895 @@
+---
+title: "GSE136831 IPF Lung PreProcessing"
+author: "Kendrix Kek"
+date: "2025-10-31"
+output:
+  html_document:
+    theme: sandstone
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "Z:/Kendrix")
+```
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(here)
+library(DT)
+library(GEOquery)
+library(crayon)
+library(RColorBrewer)
+library(tidyverse)
+library(Seurat)
+library(SeuratData)
+library(Azimuth)
+library(patchwork)
+library(Matrix)
+library(RCurl)
+library(scales)
+library(clustree)
+library(SoupX)
+library(cowplot)
+library(metap)
+library(SingleCellExperiment)
+library(DropletUtils)
+library(AnnotationHub)
+library(HGNChelper)
+library(ensembldb)
+library(multtest)
+library(glmGamPoi)
+library(pbapply)
+library(data.table)
+library(ggrepel)
+library(ggpubr)
+library(stringr)
+library(canvasXpress)
+library(clinfun)
+library(GGally)
+library(factoextra)
+library(DESeq2)
+library(limma)
+library(fgsea)
+library(org.Mm.eg.db)
+library(kableExtra)
+```
+
+
+## Step 1: Data Exploration and Object Creation
+
+### Step 1.1: Create Seurat object
+
+```{r read count matrix and associated files, eval=FALSE}
+# Read in count and the supplementary files.
+mat <- readMM(file = "Z:/Kendrix/IPF_Lung/GSE136831/raw_data/GSE136831_RawCounts_Sparse.mtx.gz")
+barcodes <- read.delim("Z:/Kendrix/IPF_Lung/GSE136831/raw_data/GSE136831_AllCells.cellBarcodes.txt.gz", 
+                       header = FALSE)
+genes <- data.table::fread("Z:/Kendrix/IPF_Lung/GSE136831/raw_data/GSE136831_AllCells.GeneIDs.txt.gz", 
+                           data.table = FALSE)
+
+# Define rownames using genes and colnames using barcoses.
+dim(mat) # 45947 rows, 312928 columns
+nrow(genes) # 45947 rows.
+nrow(barcodes) # 312928 rows.
+
+rownames(mat) <- genes$HGNC_EnsemblAlt_GeneID
+colnames(mat) <- barcodes$V1
+
+# Create Seurat object.
+obj <- CreateSeuratObject(counts = mat)
+
+# Save Seurat object as RDS object.
+saveRDS(object = obj, file = "Z:/Kendrix/IPF_Lung/GSE136831/processed_data/init_seurat_obj.rds")
+```
+
+```{r eval=FALSE}
+# Remove unneeded objects.
+rm(mat, barcodes, genes)
+```
+
+
+### Step 1.2: Pull sample metadata from GEO
+
+```{r sample metadata manipulation, out.width="100%"}
+# Pull metadata from GEO.
+metadata <- pData(getGEO(GEO = "GSE136831", GSEMatrix = TRUE)[[1]])
+
+# Subset only columns that we need.
+colnames(metadata)
+metadata <- (metadata %>% subset(select = c(title,
+                                            geo_accession,
+                                            source_name_ch1,
+                                            organism_ch1,
+                                            characteristics_ch1.1,
+                                            characteristics_ch1.2,
+                                            characteristics_ch1.3)) %>%
+               dplyr::rename(orig.ident = title, 
+                             tissue = source_name_ch1,
+                             organism = organism_ch1,
+                             condition = characteristics_ch1.1,
+                             sex = characteristics_ch1.2,
+                             age = characteristics_ch1.3))
+
+# Edit some metadata variables.
+metadata$orig.ident <- gsub(" scRNAseq", "", metadata$orig.ident)
+metadata$condition <- gsub("disease: ", "", metadata$condition)
+metadata$sex <- gsub("Sex: ", "", metadata$sex)
+metadata$age <- gsub("age: ", "", metadata$age)
+
+# Visualize preliminary distribution of sample metadata.
+colnames(metadata)
+columns_incl <- c("organism", "tissue", "condition", "sex", "age")
+
+for (col in columns_incl) {
+  p <- ggplot(metadata, aes_string(x = col)) +
+    geom_bar(fill = "darkslategrey", colour = "black") +
+    geom_text(stat = "count", aes(label = after_stat(count)), vjust = -0.5) +
+    labs(title = paste("Distribution of", col, "in GSE136831"),
+         x = col,
+         y = "Count") +
+    theme_bw()
+  
+  print(p)
+}
+```
+
+```{r}
+# Remove unneeded objects.
+rm(col, columns_incl, p)
+```
+
+
+### Step 1.3: Pull Seurat generated metadata
+
+```{r pull Seurat metadata}
+# Load Seurat object.
+obj <- readRDS(file = "Z:/Kendrix/IPF_Lung/GSE136831/processed_data/init_seurat_obj.rds")
+
+# Pull Seurat metadata.
+seu_metadata <- obj@meta.data %>% rownames_to_column()
+
+# Extract sample identifier to match GEO metadata.
+seu_metadata$orig.ident <- ""
+seu_metadata$orig.ident <- str_extract(seu_metadata$rowname, "^[^_]+")
+seu_metadata$orig.ident <- sub("-.*", "", seu_metadata$orig.ident)
+```
+
+
+### Step 1.4: Merge both metadatas together
+
+```{r merge metadatas}
+# Merge metadata to seu_metadata by orig.ident.
+meta <- left_join(seu_metadata, metadata, by = "orig.ident")
+
+# Add rownames back to dataframe.
+meta <- meta %>% column_to_rownames()
+seu_metadata <- seu_metadata %>% column_to_rownames()
+
+# Check if the row orders are maintained.
+identical(rownames(meta), rownames(seu_metadata)) # TRUE.
+identical(rownames(meta), colnames(obj)) # TRUE.
+
+# Rename quality metrics columns.
+meta <- meta %>% dplyr::rename(nUMI = nCount_RNA,
+                               nGene = nFeature_RNA)
+
+# Add more quality metrics.
+meta$mitoRatio = PercentageFeatureSet(object = obj, pattern = "^mt-")
+meta$mitoRatio = meta$mitoRatio / 100
+
+# Calculate novelty score.
+meta$log10GenesPerUMI <- log10(meta$nGene) / log10(meta$nUMI)
+
+# Add the new metadata back to the Seurat object. 
+identical(rownames(meta), colnames(obj)) # TRUE.
+identical(rownames(meta), rownames(obj@meta.data)) # TRUE.
+obj@meta.data <- meta
+```
+
+
+### Step 1.5: Preliminary QC
+
+There are some NAs introduced from the join term. Let's find out what they are. 
+
+```{r NA check}
+# Find the rows with NAs.
+nrow(obj@meta.data[!complete.cases(obj@meta.data),]) # 13,752 rows with NAs.
+
+# Which identifiers are responsible for these NAs.
+unique(obj@meta.data[!complete.cases(obj@meta.data),]$orig.ident) # 022C, 92C, 210CO, 219C - looks like 3 controls and 1 COPD.
+
+# See if we find these in the metadata downloaded from GEO.
+missing_ident <- unique(obj@meta.data[!complete.cases(obj@meta.data),]$orig.ident)
+for (i in missing_ident) {
+  ifelse(i %in% metadata$orig.ident, 
+         print(paste("ID", i, "is in GEO metadata")), 
+         print(paste("ID", i, "is not in GEO metadata"))
+         )
+}
+
+# All four IDs are not in the GEO metadata. Since we don't have sufficient metadata info, let's remove them. 
+
+# Filter out metadata with NAs by their IDs.
+dim(obj) # 45,947; 312,928
+subset_obj <- subset(obj, subset = orig.ident %in% missing_ident,
+                     invert = TRUE)
+dim(subset_obj) # 45,947; 299,176
+```
+
+
+We are also interested in the IPF and control conditions only, not the COPD, so let's subset out the COPD cases too.  
+
+```{r filter out COPD}
+# Find number of rows with COPD.
+nrow(subset_obj@meta.data[subset_obj@meta.data$condition == "COPD",]) # 69,456 COPD.
+
+# Filter out COPD samples. 
+dim(subset_obj) # 45,947; 299,176
+subset_obj <- subset(subset_obj, subset = condition == "COPD", invert = TRUE)
+dim(subset_obj) # 45,947; 229,720
+```
+
+```{r}
+# Remove unneeded objects.
+rm(metadata, seu_metadata, meta, missing_ident, obj, i)
+```
+
+
+## Step 2: Quality Control
+
+### Step 2.1: Visualize cell counts
+
+Check cell counts with number of unique barcodes detected to determine capture efficiency.
+
+```{r cell counts check, out.width="100%"}
+# Get sample metadata from Seurat object.
+meta <- subset_obj@meta.data
+
+# Visualize cell counts.
+meta %>%
+  ggplot(aes(x = condition, fill = condition)) +
+  geom_bar() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  ggtitle("NCells")
+```
+
+
+### Step 2.2: Visualize UMI distribution across conditions
+
+UMI counts should generally be above 500. If UMI counts are between 500 and 1000, the cells should probably be sequenced more deeply.
+
+Note: Most are above 1000 so good sequencing depth.
+
+```{r UMI density distribution, out.width="100%"}
+# Visualize UMI counts per cell.
+meta %>% 
+  ggplot(aes(x = nUMI, color = condition, fill = condition)) +
+  geom_density(alpha = 0.2) +
+  scale_x_log10(labels = label_number()) +
+  ylab("Cell density") +
+  geom_vline(xintercept = 500, linetype = "dashed", color = "red") +
+  theme_classic()
+```
+
+
+### Step 2.3: Visualize cell novelty score
+
+Cells with novelty score above 0.80 are considered good quality cells. 
+
+Note: All cells are above 0.80 novelty score. 
+
+```{r novelty score distribution, out.width="100%"}
+# Visualize novelty score.
+meta %>% 
+  ggplot(aes(x = log10GenesPerUMI, color = condition, fill = condition)) +
+  geom_density(alpha = 0.2) +
+  geom_vline(xintercept = 0.8, linetype = "dashed", color = "red") +
+  theme_classic()
+```
+
+
+### Step 2.4: Visualize mito ratio
+
+Low quality cells have mitochondrial ratio higher than 0.20.
+
+Note: All cells below mito ratio of 0.20.
+
+```{r mito ratio distribution, out.width="100%"}
+# Visualize mitochondrial ratio.
+meta %>%
+  ggplot(aes(x = mitoRatio, color = condition, fill = condition)) +
+  geom_density(alpha = 0.2) +
+  geom_vline(xintercept = 0.2, linetype = "dashed", color = "red") +
+  theme_classic()
+```
+
+
+### Step 2.5: Visualize joint filtering effects
+
+Note: Two cells in IPF drop below 250 nGene.
+
+```{r joint filtering distribution, out.width="100%"}
+# Visualize joint filtering QCs.
+meta %>% 
+    ggplot(aes(x = nUMI, y = nGene, color = mitoRatio)) + 
+    geom_point() + 
+    scale_colour_gradient(low = "gray90", high = "black") +
+    stat_smooth(method = lm) +
+    scale_x_log10() + 
+    scale_y_log10() + 
+    geom_vline(xintercept = 500) +
+    geom_hline(yintercept = 250) +
+    theme_classic() +
+    facet_wrap(~condition)
+```
+
+
+### Step 2.6: Visualize valid cells with knee plot
+
+A distinct "cliff-and-knee" shape indicates a healthy sample with clear separation between true cells and background "empty" droplets, while other shapes can point to issues with sample quality. 
+
+```{r knee plot distribution, out.width="100%"}
+# Rank expression barcodes. 
+br.out = barcodeRanks(subset_obj@assays$RNA$counts)
+
+# Plot knee plot.
+plot(br.out$rank, br.out$total, log = "xy", xlab = "Rank", ylab = "Total")
+abline(h = metadata(br.out)$knee, col = "dodgerblue", lty = 2)
+abline(h = metadata(br.out)$inflection, col = "forestgreen", lty = 2)
+legend("bottomleft", lty = 2, col = c("dodgerblue", "forestgreen"), legend = c("knee", "inflection"))
+```
+
+```{r}
+# Remove unneeded objects.
+rm(br.out, meta)
+```
+
+
+### Step 2.7: Filtering
+
+#### Step 2.7.1: Cell-level filtering
+
+We will filter the cells based on the following thresholds:
+
+nUMI > 500
+
+nGene > 250
+
+log10GenesPerUMI > 0.8
+
+mitoRatio < 0.2
+
+```{r cell level filtering}
+# Get pre-filtering cell counts.
+dim(subset_obj)[2] # 229,720 cells
+
+# Low-quality cell filtering.
+umi_filtered <- subset(x = subset_obj, subset = nUMI >= 500)
+gene_filtered <- subset(x = umi_filtered, subset = nGene >= 250)
+genesperumi_filtered <- subset(x = gene_filtered, subset = log10GenesPerUMI > 0.80)
+mitoratio_filtered <- subset(x = genesperumi_filtered, subset = mitoRatio < 0.20)
+
+# Get post-filtering Seurat object. 
+# Enter level of filtering desired here.
+cell_filtered_seurat = mitoratio_filtered
+
+# Get counts after low-quality cell filtering.
+dim(cell_filtered_seurat)[2] # 229,654 cells.
+```
+
+```{r cell level filtering visualization, echo=FALSE, out.width="100%"}
+# Create filtering summary dataframe.
+filtering_summary <- data.frame(cell_number_remaining = c(ncol(subset_obj),
+                                                          ncol(umi_filtered),
+                                                          ncol(gene_filtered),
+                                                          ncol(genesperumi_filtered),
+                                                          ncol(mitoratio_filtered)),
+                                filter_criteria = c("Pre-filtering counts",
+                                                    "Filter: UMI counts per cell (nUMI > 500)",
+                                                    "Filter: Genes detected per cell (nGene > 250)",
+                                                    "Filter: Complexity (log10GenesPerUMI > 0.8)",
+                                                    "Filter: Mitochondrial ratio (mitoRatio < 0.2)"))
+filtering_summary$filtered_out <- c(0, 
+                                    sapply(2:nrow(filtering_summary), 
+                                           function(x) 
+                                             filtering_summary$cell_number_remaining[x-1] - 
+                                             filtering_summary$cell_number_remaining[x]))
+
+filtering_summary$filter_criteria <- factor(filtering_summary$filter_criteria, 
+                                            rev(filtering_summary$filter_criteria))
+
+# Visualize filtering summary.
+ggplot(filtering_summary) +
+  geom_bar(aes(filter_criteria, -cell_number_remaining), 
+           stat = "identity", 
+           fill = "grey70", 
+           color = "black", 
+           alpha = 0.5) +
+  geom_bar(aes(filter_criteria, filtered_out), 
+           stat = "identity", 
+           fill = "darkred", 
+           color = "black", 
+           alpha = 0.5) +
+  geom_text(aes(x = filter_criteria, y = -min(cell_number_remaining)/2,  
+                label = comma(cell_number_remaining)), 
+            size = 5) +
+  geom_text(aes(x = filter_criteria, y = max(filtered_out)/1.5,  
+                label = comma(filtered_out)), 
+            size = 4) +
+  geom_hline(yintercept = 0) +
+  coord_flip() + 
+  theme_bw() + 
+  xlab("") + 
+  ylab("") + 
+  ggtitle("Cell-level filtering") +
+  theme(axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(colour = "grey20", size = 12),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        plot.title = element_text(face = "bold", size = 12, hjust = 0.5)) +
+  scale_x_discrete(position = "top") 
+
+```
+
+```{r}
+# Remove unneeded objects.
+rm(subset_obj, filtering_summary, gene_filtered, genesperumi_filtered, mitoratio_filtered, umi_filtered)
+```
+
+
+#### Step 2.7.2: Gene-level filtering
+
+We also remove genes that have zero expression in all cells and genes that are only expressed in 10 or less cells as genes that are expressed in only a handful of cells are not meaningful and can bring down the averages for all the other cells that they are not expressed in.
+
+```{r gene-level filtering}
+# Extract count matrix.
+counts <- GetAssayData(object = cell_filtered_seurat, layer = "counts")
+
+# Get a logical vector for every gene that has more than zero counts per cell.
+nonzero <- counts > 0
+
+# Get a logical vector of genes that are expressed in 10 or more cells.
+keep_genes <- Matrix::rowSums(nonzero) >= 10
+
+# Subset counts to keep genes that are non-zero and expressed in 10 or more cells.
+filtered_counts <- counts[keep_genes, ]
+
+# Create new Seurat object with the subsetted counts.
+filtered_seurat <- CreateSeuratObject(filtered_counts, meta.data = cell_filtered_seurat@meta.data)
+```
+
+
+```{r gene-level filtering visualization, echo=FALSE, out.width="100%"}
+# Create filtering summary dataframe.
+filtering_summary <- data.frame(cell_number_remaining = c(nrow(cell_filtered_seurat),
+                                                          nrow(filtered_seurat)),
+                                filter_criteria = c("Pre-filtering counts",
+                                                    "Filter: Non-zero genes detected >= 10 cells"))
+filtering_summary$filtered_out <- c(0, 
+                                    sapply(2:nrow(filtering_summary), 
+                                           function(x) 
+                                             filtering_summary$cell_number_remaining[x-1] - 
+                                             filtering_summary$cell_number_remaining[x]))
+
+filtering_summary$filter_criteria <- factor(filtering_summary$filter_criteria, 
+                                            rev(filtering_summary$filter_criteria))
+
+# Visualize filtering summary.
+ggplot(filtering_summary) +
+  geom_bar(aes(filter_criteria, -cell_number_remaining), 
+           stat = "identity", 
+           fill = "grey70", 
+           color = "black", 
+           alpha = 0.5) +
+  geom_bar(aes(filter_criteria, filtered_out), 
+           stat = "identity", 
+           fill = "darkred", 
+           color = "black", 
+           alpha = 0.5) +
+  geom_text(aes(x = filter_criteria, y = -min(cell_number_remaining)/2,  
+                label = comma(cell_number_remaining)), 
+            size = 5) +
+  geom_text(aes(x = filter_criteria, y = max(filtered_out)/1.5,  
+                label = comma(filtered_out)), 
+            size = 4) +
+  geom_hline(yintercept = 0) +
+  coord_flip() + 
+  theme_bw() + 
+  xlab("") + 
+  ylab("") + 
+  ggtitle("Gene-level filtering") +
+  theme(axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(colour = "grey20", size = 12),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        plot.title = element_text(face = "bold", size = 12, hjust = 0.5)) +
+  scale_x_discrete(position = "top") 
+```
+
+```{r}
+# Remove unneeded objects.
+rm(cell_filtered_seurat, counts, filtered_counts, filtering_summary, keep_genes, nonzero)
+```
+
+
+## Step 3: Normalization
+
+### Step 3.1: Pre-normalization distribution
+
+```{r pre-normalization distribution, out.width="100%"}
+# Visualize expression distribution before normalization.
+hist(colSums(filtered_seurat[["RNA"]]$counts), 
+     breaks = 100, 
+     col = "#212226",
+     main = "Pre-Normalization: Expression distribution", 
+     xlab = "Sum of expression")
+```
+
+
+### Step 3.2: SCTransformation
+
+```{r SCTransformation}
+# Free up memory.
+gc()
+
+# Set memory limit.
+options(future.globals.maxSize = 5000 * 1024^2)
+
+# Perform SCTransform normalization.  
+seurat_sct <- SCTransform(filtered_seurat, 
+                          vars.to.regress = c("mitoRatio"),
+                          vst.flavor = "v2",
+                          conserve.memory = TRUE,
+                          verbose = FALSE)
+
+# Compare the objects before and after SCT transformation. 
+filtered_seurat # Look at the feature counts before transformation.
+seurat_sct # Look at the feature counts after transformation.
+
+# Check which objects are stored in which assays. 
+seurat_sct@assays
+```
+
+```{r}
+# Remove unneeded objects.
+rm(filtered_seurat)
+```
+
+
+### Step 3.3: Post-normalization distribution
+
+```{r SCTransformed normalization visualization, out.width="100%"}
+# Visualize expression distribution after scaling.
+hist(colSums(seurat_sct[["SCT"]]$data), 
+     breaks = 100, 
+     col = "#b14b34",
+     main = "Post-SCTransformed: Log-normalized expression distribution", 
+     xlab = "Sum of expression")
+```
+
+
+## Step 4: Dimensional Reduction and Clustering
+
+### Step 4.1: Run PCA 
+
+Note: PC15 describes approximately 50% cumulative variation in the data. The elbow plot bends at approximately PC30, which describes approximately 75% cumulative variation. For now, we will run UMAP with these 30 PCS included since this is also the Seurat default. 
+
+```{r run PCA and visualize dimension reduction, out.width="100%"}
+# Run PCA.
+seurat_sct <- RunPCA(seurat_sct, verbose = FALSE)
+
+# Visualize PC dimensions with elbow plot.
+# Determine percent of variation associated with each PC.
+pct <- seurat_sct[["pca"]]@stdev / sum(seurat_sct[["pca"]]@stdev) * 100
+
+# Calculate cumulative percents for each PC.
+cumu <- cumsum(pct)
+
+# Determine which PC exhibits cumulative percent greater than 90% and % variation associated with the PC as less than 5.
+co1 <- which(cumu > 90 & pct < 5)[1]
+co1
+
+# Determine the difference between variation of PC and subsequent PC.
+co2 <- sort(which((pct[1:length(pct) - 1] - pct[2:length(pct)]) > 0.1), decreasing = T)[1] + 1
+
+# Last point where change of % of variation is more than 0.1%.
+co2
+
+# Minimum of the two calculation.
+pcs <- min(co1, co2)
+pcs
+
+# Create a dataframe with values.
+elbowplot_df <- data.frame(pct = pct, 
+                           cumu = cumu, 
+                           rank = 1:length(pct))
+
+# Elbow plot to visualize.
+ggplot(elbowplot_df, aes(cumu, pct, label = rank, color = rank > pcs)) + 
+  geom_text() + 
+  geom_vline(xintercept = 90, color = "grey") + 
+  geom_hline(yintercept = min(pct[pct > 5]), color = "grey") +
+  theme_bw()
+
+# Remove unneeded objects.
+rm(co1, co2, cumu, elbowplot_df, pcs, pct)
+```
+
+
+### Step 4.2: Run UMAP
+
+```{r run UMAP, out.width="100%"}
+# Visualize dimension reduction from PCA.
+seurat_sct <- RunUMAP(seurat_sct, dims = 1:30, reduction = "pca")
+DimPlot(object = seurat_sct, group.by = "condition")
+
+# Explore the top PC markers.
+DimHeatmap(seurat_sct, 
+           dims = 1:15, 
+           cells = 500, 
+           balanced = TRUE)
+```
+
+
+### Step 4.3: Compute KNN
+
+```{r find neighbours}
+# Compute SNN graph.
+seurat_cluster <- FindNeighbors(object = seurat_sct, dims = 1:30) # Based on elbow plot.
+```
+
+```{r}
+# Remove unneeded objects.
+rm(seurat_sct)
+```
+
+
+### Step 4.4: Explore cluster resolutions
+
+Note: Resolution at around 0.8 looks stable. 
+
+```{r explore cluster resolutions, out.width="100%"}
+# Determine start and end resolution range.
+start_reso_range = 0.6
+end_reso_range = 1.2
+range_interval = 0.2
+
+# Find clusters given the range.
+seurat_cluster <- FindClusters(object = seurat_cluster,
+                               resolution = seq(from = start_reso_range,
+                                                to = end_reso_range,
+                                                by = range_interval))
+
+# Remove unneeded objects.
+rm(start_reso_range, end_reso_range, range_interval)
+
+# Visualize relationship between different cluster resolutions using clustree.
+clustree(seurat_cluster)
+```
+
+
+### Step 4.5: Choose cluster resolution
+
+Note: Resolution at around 0.8 looks stable based on clustree above. 
+
+```{r choose cluster resolution, out.width="100%"}
+# Assign desired cluster resolution as identity of Seurat.
+Idents(object = seurat_cluster) <- "SCT_snn_res.0.8"
+
+# Visualize cluster with a UMAP.
+DimPlot(seurat_cluster,
+        reduction = "umap",
+        label = TRUE,
+        label.size = 3) + 
+  ggtitle("SCT_snn_res.0.8") +
+  NoLegend()
+```
+
+
+## Step 5: Cell Type Annotation
+
+### Step 5.1: Find top markers associated with each cluster
+
+```{r find markers}
+# Find markers for every cluster compared to all remaining cells. Include only positive markers. 
+cluster_markers <- FindAllMarkers(seurat_cluster, only.pos = TRUE)
+datatable(
+  cluster_markers %>% 
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1) %>%
+    slice_max(order_by = p_val_adj, n = 10, with_ties = FALSE) %>%
+    arrange(cluster, p_val_adj),
+  caption = "Top 10 highly differential markers by cluster",
+  options = list(pageLength = 10, scrollX = TRUE),
+  rownames = FALSE
+) %>%
+  formatRound(columns = c("avg_log2FC"), digits = 3) %>%
+  formatSignif(columns = c("p_val"), digits = 3) %>%
+  formatSignif(columns = c("p_val_adj"), digits = 3)
+```
+
+```{r}
+# Remove unneeded objects.
+rm(cluster_markers)
+```
+
+
+### Step 5.2: Visualize clusters against known markers
+
+```{r dotplot cluster marker visualization, out.width="100%"}
+# Visualize the clusters against [known markers of interest](https://pmc.ncbi.nlm.nih.gov/articles/PMC9202574/).
+# Basal cells: TP63, KRT5
+# Secretory cells: SCGB1A1, SCGB3A2
+# Ciliated cells: FOXJ1, RSPH1
+# Goblet cells: MUC5AC, SPDEF
+# Tuft cells: POU2F3, ASCL2
+# Ionocytes: FOXI1, ASCL3
+# AT1: AGERH, RTKN2
+# AT2: SFTPC, LAMP3
+# Mucous cells: MUC5B, SPDEF
+# Airway SMCs: ACTA2, DES, LGR6
+# vSMCs: NTRK3, ITGA7
+# Alveolar fibroblasts 1: TCF21, WNT2
+# Alveolar fibroblasts 2: MFAP5, SCARA5
+# Pericytes: TRPC6, LAMC3
+# Mesothelium: WT1, UPK3B, FREM2
+# Arterial endothelial cells: DKK2, GJA5
+# Venous endothelial cells: ACKR1, HDAC9
+# Lymphatic endothelial cells: PROX1, MMRN1
+DotPlot(seurat_cluster,
+        features = c("TP63", "KRT5", 
+                     "SCGB1A1", "SCGB3A2",
+                     "FOXJ1", "RSPH1",
+                     "MUC5AC", "SPDEF",
+                     "POU2F3", "ASCL2",
+                     "FOXI1", "ASCL3",
+                     "RTKN2",
+                     "SFTPC", "LAMP3",
+                     "MUC5B", 
+                     "ACTA2", "DES", "LGR6",
+                     "NTRK3", "ITGA7",
+                     "TCF21", "WNT2",
+                     "MFAP5", "SCARA5",
+                     "TRPC6", "LAMC3",
+                     "WT1", "UPK3B", "FREM2",
+                     "DKK2", "GJA5",
+                     "ACKR1", "HDAC9",
+                     "PROX1", "MMRN1"),
+        cluster.idents = TRUE,
+        cols = c("#d6cfc7", "#01013f"),
+        dot.scale = 6,
+        scale.by = "size") +
+  ggtitle("Cluster identitities by known markers") +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) 
+```
+
+
+### Step 5.3: Run Azimuth annotation
+
+Note: Prediction score is high across the board for all cell types. 
+
+```{r run Azimuth}
+# Check all available Azimuth references.
+available_data <- AvailableData()
+available_data[grep("lung", available_data[, 3]), 1:3] # Use lungref.
+
+# Run Azimuth with lungref.
+options(timeout = 1000)
+seurat_annotated <- RunAzimuth(seurat_cluster, reference = "lungref")
+
+# Check annotation accuracy.
+Idents(seurat_annotated) <- "predicted.ann_finest_level"
+FeaturePlot(
+  seurat_annotated,
+  features = "mapping.score",
+  cols = c("#01013f", "#59974d", "#fff000"),
+  label = TRUE,
+  label.size = 3,
+  repel = TRUE,
+  label.color = "black"
+) + 
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  ggtitle("Azimuth prediction accuracy score")
+```
+
+```{r}
+# Remove unneeded object.
+rm(available_data, seurat_cluster)
+```
+
+
+### Step 5.4: Collapse similar cell type groups
+
+```{r collapse cell type groups}
+# Find unique identified cell types.
+seurat_annotated$cell_type = seurat_annotated$predicted.ann_finest_level
+unique(seurat_annotated$cell_type)
+
+# Collapse all the endothelial cells.
+grep("EC", seurat_annotated$cell_type, value = TRUE) %>% unique()
+seurat_annotated@meta.data <- mutate(seurat_annotated@meta.data,
+                                     cell_type =
+                                       recode(cell_type,
+                                              "EC arterial" = "Endothelial",
+                                              "EC venous pulmonary" = "Endothelial",
+                                              "EC general capillary" = "Endothelial",
+                                              "EC venous systemic" = "Endothelial",
+                                              "EC aerocyte capillary" = "Endothelial",
+                                              "Lymphatic EC mature" = "Lymphatic EC",
+                                              "Lymphatic EC differentiating" = "Lymphatic EC",
+                                              "Lymphatic EC proliferating" = "Lymphatic EC"))
+
+# Collapse all the fibroblasts.
+grep("fibroblast", seurat_annotated$cell_type, value = TRUE) %>% unique()
+seurat_annotated@meta.data <- mutate(seurat_annotated@meta.data,
+                                     cell_type = 
+                                       recode(cell_type,
+                                              "Adventitial fibroblasts" = "Fibroblasts",
+                                              "Alveolar fibroblasts" = "Fibroblasts",
+                                              "Peribronchial fibroblasts" = "Fibroblasts"))
+
+# Collapse all the immune cells.
+seurat_annotated$cell_type[seurat_annotated$predicted.ann_level_1 == "Immune"] %>% unique()
+seurat_annotated@meta.data <- mutate(seurat_annotated@meta.data,
+                                     cell_type = 
+                                       recode(cell_type,
+                                              "Classical monocytes" = "Immune",
+                                              "Alveolar macrophages" = "Immune",
+                                              "CD8 T cells" = "Immune",
+                                              "Non-classical monocytes" = "Immune",
+                                              "Monocyte-derived Mφ" = "Immune",
+                                              "CD4 T cells" = "Immune",
+                                              "DC2" = "Immune",
+                                              "NK cells" = "Immune",
+                                              "B cells" = "Immune",
+                                              "Interstitial Mφ perivascular" = "Immune",
+                                              "Alveolar Mφ proliferating" = "Immune",
+                                              "Plasma cells" = "Immune",
+                                              "Plasmacytoid DCs" = "Immune",
+                                              "T cells proliferating" = "Immune",
+                                              "Alveolar Mφ CCL3+" = "Immune",
+                                              "Migratory DCs" = "Immune",
+                                              "Alveolar Mφ MT-positive" = "Immune"))
+```
+
+
+### Step 5.5: Visualize finalized cell type annotation
+
+```{r cell type annotation visualization, message=FALSE, warning=FALSE, out.width="100%"}
+ # Visualize finalized annotation with a UMAP.
+DimPlot(seurat_annotated,
+        reduction = "umap",
+        group.by = "cell_type",
+        label = TRUE,
+        label.size = 4,
+        repel = TRUE) + 
+  ggtitle("Final cell type annotation") +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "bottom",
+        legend.spacing.x = unit(0.2, "cm"),
+        legend.spacing.y = unit(0.1, "cm")) +
+  guides(colour = guide_legend(nrow = 4))
+```
+
+
+## Step 6: Save Seurat Object 
+
+```{r save Seurat object}
+# Save Seurat object.
+saveRDS(object = seurat_annotated, 
+        file = "Z:/Kendrix/IPF_Lung/GSE136831/processed_data/preprocessed_seurat_obj.rds")
+```
+
+

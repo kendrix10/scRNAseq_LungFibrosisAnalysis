@@ -1,0 +1,771 @@
+---
+title: "GSE264162 Bleomycin Lung Analysis"
+author: "Kendrix Kek"
+date: "2024-07-21"
+output:
+  html_document:
+    theme: sandstone
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, message = FALSE}
+library(GEOquery)
+library(crayon)
+library(tidyverse)
+library(Seurat)
+library(SeuratData)
+library(Azimuth)
+library(patchwork)
+library(Matrix)
+library(RCurl)
+library(DoubletFinder)
+library(reactable)
+library(scales)
+library(SoupX)
+library(cowplot)
+library(SingleCellExperiment)
+library(DropletUtils)
+library(AnnotationHub)
+library(HGNChelper)
+library(ensembldb)
+library(EnhancedVolcano)
+library(multtest)
+library(glmGamPoi)
+library(limma)
+library(pbapply)
+library(data.table)
+library(tidytext)
+library(pheatmap)
+library(ggrepel)
+library(ggpubr)
+library(stringr)
+library(canvasXpress)
+library(clinfun)
+library(GGally)
+library(factoextra)
+library(rstatix)
+library(DESeq2)
+library(limma)
+library(fgsea)
+library(org.Mm.eg.db)
+library(kableExtra)
+```
+
+
+# Experimental design
+
+**GEO Accession**: GSE264162
+
+**Publication Title**: Lung injury-induced activated endothelial cell states persist in aging-associated progressive fibrosis (2024)
+
+**Authors**: Ahmed A. Raslan, Tho X. Pham, Jisu Lee, Konstantinos Kontodimas, Andrew Tilston-Lunel, Jillian Schmottlach, Jeongmin Hong, Taha Dinc, Andreea M. Bujor, Nunzia Caporarello, Aude Thiriot, Ulrich H. von Andrian, Steven K. Huang, Roberto F. Nicosia, Maria Trojanowska, Xaralabos Varelas, Giovanni Ligresti
+
+**Publication**: Nature Communications
+
+---
+
+**Rationale**: Progressive lung fibrosis is associated with poorly understood aging-related endothelial cell dysfunction. Pulmonary fibrosis is characterized by alveolar damage and the accumulation of collagen-producing fibroblasts that contribute to excessive extracellular matrix deposition and loss of organ function. Endothelial cells from aged mouse lungs with sustained fibrosis exhibit reduced expression of endothelial identity genes and increased expression of inflammatory- and fibrosis-associated genes compared to young animals. 
+
+Subpopulations of activated endothelial cell are prevalent in lungs of aged mice and can also be detected in human fibrotic lungs. Longitudinal single cell RNA-sequencing combined with lineage tracing reveal that injury-associated endothelial states transiently appear during the peak of collagen production and vanish during the resolution phase in young lungs. Conversely, endothelial cells derived from aged lungs persist in the activated states and are topologically restricted to fibrotic areas, indicating a failure of the aged vascular endothelial cells to return to quiescence. Differential transcriptional analysis together with pathway evaluation identify putative genes and signaling pathways associated with metabolism, such as glycolysis and oxidative phosphorylation, and upstream regulators, such as MYC, mTOR and YAP/TAZ that likely contribute to the appearance and pathogenic persistence of activated endothelial cells with aging. YAP/TAZ can cooperate with BDNF, a TrkB ligand that is reduced in fibrotic lungs to promote capillary morphogenesis.
+
+**Methodology**: Single-cell RNA profiling of whole lungs of young mice (2 months) and aged mice (18 months) with a single dose of intratracheal bleomycin instillation. Lungs were isolated at the early resolution phase of fibrosis (30 days post-bleomycin) and compared to saline-treated young and aged lungs. 15 distinct lung cell types were defined from approximately 52,542 cells with vascular endothelial cells being ht emost represented cellular subtype. The authors then reclustered the Cdh5+ and Pecam-1+ endothelial cells to identify different endothelial subpopulations. They identified 9 vascular endothelial cell subclusters including those form the veins, arteries, general capillaries (gCap) and aerocytes. Within these subclusters, there were 4 subclusters that emerged exclusively in bleomycin-treated lungs, which were defined as "activated" gCap endothelial cells, "activated" aCap endothelial cells, "activated" arterial endothelial cells and "activated" venous endothelial cells as they shared the common markers of cell activation, including Fxdy5, Spp1, Ankrd37, Lrg1, and Amd1.
+
+<center>
+
+![Fig. 1: Experimental Design](/Users/kendrix10/Documents/Work/UnityHealth/Data_Projects/Bleomycin_Lung_Fibrosis/GSE264151/plots/Fig.1_Experimental_design.png)
+
+</center>
+
+
+# 1: Dataset Design
+
+## 1.1: Load pre-processed Seurat objects
+
+```{r load pre-processed seurat objects}
+# Specify project file path. 
+project_path = "/Users/kendrix10/Documents/Work/UnityHealth/Data_Projects/Bleomycin_Lung_Fibrosis/GSE264162/"
+
+# Load pre-processed Seurat objects.
+load(file = paste0(project_path, "data/preprocessed_seurat_obj.RData"))
+
+# Get metadata column and rename.
+metadata = (seurat_cluster@meta.data %>%
+              subset(select = -cell_type) %>%
+              rename("title" = "mice_id",
+                     "predicted.ann_finest_level" = "cell_type"))
+
+# Add edited metadata back to Seurat object.
+seurat_cluster@meta.data <- metadata
+
+# Collapse some of the cell types together (fibroblasts, endothelial cells, lymphatic endothelial cells).
+# Find unique fibroblasts in the data and collapse.
+grep("fibroblast", seurat_cluster$cell_type, value = TRUE) %>% unique()
+seurat_cluster$cell_type <- gsub("Adventitial fibroblasts", "Fibroblasts (Total)",
+                                 gsub("Alveolar fibroblasts", "Fibroblasts (Total)",
+                                      gsub("Peribronchial fibroblasts", "Fibroblasts (Total)",
+                                           gsub("Subpleural fibroblasts", "Fibroblasts (Total)",
+                                                seurat_cluster$cell_type))))
+
+# Find unique endothelial cells in the data and collapse.
+grep("EC", seurat_cluster$cell_type, value = TRUE) %>% unique()
+seurat_cluster$cell_type <- gsub("EC general capillary", "Endothelial cells (Total)",
+                                 gsub("EC venous pulmonary", "Endothelial cells (Total)",
+                                      gsub("EC venous systemic", "Endothelial cells (Total)",
+                                           gsub("EC arterial", "Endothelial cells (Total)",
+                                                gsub("EC aerocyte capillary", "Endothelial cells (Total)",
+                                                     seurat_cluster$cell_type)))))
+
+# Find unique lympathic endothelial cells in the data and collapse.
+grep("EC", seurat_cluster$cell_type, value = TRUE) %>% unique()
+seurat_cluster$cell_type <- gsub("Lymphatic EC mature", "Lymphatic endothelial cells (Total)",
+                                 gsub("Lymphatic EC differentiating", "Lymphatic endothelial cells (Total)",
+                                      gsub("Lymphatic EC proliferating", "Lymphatic endothelial cells (Total)", 
+                                           seurat_cluster$cell_type)))
+
+# Factorize the cell identities according to cell lineages.
+cell_type_order = c("Basal resting", "Suprabasal", "Multiciliated (nasal)", "Multiciliated (non-nasal)", 
+                    "Deuterosomal", "Goblet (nasal)", "Club (nasal)", "Club (non-nasal)", "Ionocyte", 
+                    "SMG duct", "AT1", "AT2", "AT2 proliferating", "Transitional Club-AT2", 
+                    "Smooth muscle", "SM activated stress response", "Fibromyocytes", 
+                    "Fibroblasts (Total)", "Myofibroblasts", "Mesothelium", "Pericytes", 
+                    "Endothelial cells (Total)", "Lymphatic endothelial cells (Total)",
+                    "Alveolar macrophages", "Plasma cells", "DC2", "Non-classical monocytes", 
+                    "Mast cells", "B cells", "CD4 T cells", "CD8 T cells", "Neuroendocrine")
+
+seurat_cluster$cell_type = factor(x = seurat_cluster$cell_type, levels = cell_type_order)
+
+# Factorize the timepoint according to sequential order.
+seurat_cluster$timepoint <- factor(x = seurat_cluster$timepoint,
+                                   levels = c("Sham", "Day 14", "Day 35"))
+
+# Create a column in metadata slot that holds the treatment and timepoint information.
+seurat_cluster$comparison_var = ifelse(seurat_cluster$timepoint == "Sham",
+                                       "Sham", 
+                                       paste(seurat_cluster$treatment,                     
+                                             seurat_cluster$timepoint,  
+                                             sep = "_"))
+
+# Factorize the comparison_var according to sequential order.
+seurat_cluster$comparison_var <- factor(x = seurat_cluster$comparison_var,
+                                        levels = c("Sham", "Bleomycin_Day 14", "Bleomycin_Day 35"))
+
+# Set default idents of Seurat object.
+Idents(seurat_cluster) <- "cell_type"
+
+# Remove unneeded object.
+rm(cell_type_order, seurat_annotated, metadata)
+```
+
+
+## 1.2: Create global cell type proportion table
+
+We want to see the global changes in proportion to interrogate the effects of Bleomycin treatment in young and old mice. The hypothesis is that injury due to Bleomycin will deplete the epithelial cells while the cell mechanism recompense by producing more collagen-producing fibroblasts to help with recovery. 
+
+```{r global cell type proportion summary table}
+# Get the variables of interest.
+n_cells <- (FetchData(seurat_cluster,
+                      vars = c("mice_id", "cell_type", "comparison_var", "treatment", "timepoint"))) 
+
+# Count the total number of cells for each treatment + timepoint.
+total_per_condition <- (n_cells %>% 
+                          dplyr::count(mice_id, comparison_var) %>%
+                          rename("n" = "total_counts"))
+
+# Count the total number of cell types belong to each treatment + timepoint.
+total_celltypes_per_condition <- (n_cells %>% 
+                                    dplyr::count(mice_id, cell_type, comparison_var) %>%
+                                    rename("n" = "cell_counts")) 
+
+# Merge celltype count per condition table with the total counts per condition to calculate proportion. 
+total_celltypes_per_condition <- merge(total_celltypes_per_condition, total_per_condition, 
+                                       by = c("mice_id", "comparison_var"))
+
+# Calculate cell proportion on per-mice level.
+total_celltypes_per_condition <- (total_celltypes_per_condition %>% 
+                                    mutate(cell_prop = plyr::round_any(cell_counts/total_counts, accuracy = 0.001, f = ceiling)))
+
+# Rearrange the variables into desired positions. 
+total_celltypes_per_condition <- total_celltypes_per_condition %>% arrange(cell_type, factor(comparison_var,
+                                                                                             levels = c("Sham",
+                                                                                                        "Bleomycin_Day 14",
+                                                                                                        "Bleomycin_Day 35")))
+```
+
+
+## 1.3: Global cell type proportion - Aggregated mice
+
+We can visualize the changes over time through the UMAP. 
+
+```{r UMAP global cell proportion - aggregated, warning=FALSE, echo=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Visualize the global cell proportion as a UMAP. 
+DimPlot(seurat_cluster,
+        reduction = "umap",
+        group.by = "cell_type",
+        split.by = "comparison_var",
+        label = TRUE,
+        label.size = 4,
+        label.color = "#6e260e",
+        repel = TRUE,
+        order = TRUE) + 
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  NoLegend()
+```
+
+```{r aggregated cell proportion, echo=FALSE, message=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Plot the aggregated cell proportion across conditions and timepoints.
+total_celltypes_per_condition %>%
+  group_by(cell_type, comparison_var) %>%
+  summarise(across(c(cell_counts, total_counts), sum)) %>%
+  ungroup() %>%
+  mutate(cell_prop = plyr::round_any(cell_counts/total_counts, accuracy = 0.001, f = ceiling)) %>%
+  dplyr::filter(cell_prop > 0.001) %>%
+  mutate(name = reorder_within(cell_type, -cell_prop, cell_type)) %>%
+  ggplot(aes(x = name,
+             y = cell_prop,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = cell_prop,
+                vjust = 0.5, 
+                hjust = -0.5),
+            size = 5,
+            angle = 90) +
+  facet_wrap(~comparison_var) +
+  labs(x = "Cell type", 
+       y = "% aggregated cell type for each condition
+       (Blank = > 0.001 or 0.1%)", 
+       fill = element_blank()) +
+  scale_x_reordered() +
+  ylim(0, 0.65) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 90,
+                                   hjust = 1),
+        strip.text = element_text(size = 15)) 
+
+```
+
+We can try to quantify the difference in proportional changes for cell types that are more than 1% as a proportion of the total cells. 
+
+
+## 1.4: Cell type proportion - Per mice level
+
+We have n = 3 Sham, n = 2 Bleomycin-induced day 14 and n = 2 Bleomycin-induced day 35, so we can look at them on a per mice level. We can use the same UMAP as above and quantify the values on a per mice level below. 
+
+```{r UMAP global cell proportion - per mice level, warning=FALSE, echo=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Visualize the global cell proportion as a UMAP. 
+DimPlot(seurat_cluster,
+        reduction = "umap",
+        group.by = "cell_type",
+        split.by = "comparison_var",
+        label = TRUE,
+        label.size = 4,
+        label.color = "#6e260e",
+        repel = TRUE,
+        order = TRUE) + 
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  NoLegend()
+```
+
+```{r per mice cell proportion, echo=FALSE, warning=FALSE, message=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Plot the per-mice level cell proportion across conditions and timepoints.
+total_celltypes_per_condition %>%
+  mutate(mice_id = str_remove_all(mice_id, "_1$|_2$|_3$")) %>%
+  group_by(mice_id, cell_type, comparison_var) %>%
+  summarise(n = n(),
+            mean = plyr::round_any(mean(cell_prop), accuracy = 0.0001, f = ceiling),
+            sd = plyr::round_any(sd(cell_prop), accuracy = 0.0001, f = ceiling)) %>%
+  mutate(se = plyr::round_any(sd/sqrt(n), accuracy = 0.0001, f = ceiling)) %>%
+  ungroup() %>%
+  dplyr::filter(mean > 0.001) %>%
+  mutate(name = reorder_within(cell_type, -mean, cell_type)) %>%
+  ggplot(aes(x = name,
+             y = mean,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  geom_errorbar(aes(ymin = mean-se,
+                    ymax = mean+se),
+                width = 0.4,
+                alpha = 0.9) +
+  geom_text(aes(label = mean,
+                vjust = 0.5, 
+                hjust = -0.8),
+            size = 5,
+            angle = 90) +
+  facet_wrap(~comparison_var) +
+  labs(x = "Cell type", 
+       y = "% cell type for each mouse as a proportion of total cells 
+       of the condition from that mouse (Mean +/- SE)
+       (Blank = > 0.001 or 0.1%)", 
+       fill = element_blank()) +
+  scale_x_reordered() +
+  ylim(0, 0.65) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 90,
+                                   hjust = 1),
+        strip.text = element_text(size = 15)) 
+```
+
+
+# 2: Cell type proportion in ATs, fibroblasts, and endothelial cells
+
+## 2.1: Cell type proportion - Aggregated - ATs, fibroblasts, and endothelial cells
+
+```{r cell proportion - aggregated - selected cell types - UMAP, echo=FALSE, warning=FALSE, fig.height=6, fig.width=15, out.width="100%"}
+# Define list of cell types for each subgroups.
+alveolar_epi = WhichCells(seurat_cluster, idents = c("AT2", "AT2 proliferating"))
+fibroblasts = WhichCells(seurat_cluster, idents = c("Fibroblasts (Total)", "Myofibroblasts"))
+endothelial = WhichCells(seurat_cluster, idents = c("Endothelial cells (Total)"))
+
+# Visualize distribution of AT2, fibroblasts and endothelial cells by timepoints with UMAP.
+DimPlot(seurat_cluster,
+        reduction = "umap",
+        split.by = "timepoint",
+        cells.highlight = list(alveolar_epi,
+                               fibroblasts,
+                               endothelial),
+        cols.highlight = c("#b51963",
+                           "#c44601",
+                           "#42526e"),
+        sizes.highlight = 0.2,
+        ncol = 3) + 
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  NoLegend()
+```
+
+```{r aggregated cell proportion - selected cell types, echo=FALSE, message=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Plot the aggregated cell proportion across conditions and timepoints.
+total_celltypes_per_condition %>%
+  dplyr::filter(cell_type %in% c("AT2", "Fibroblasts (Total)", "Endothelial cells (Total)")) %>%
+  group_by(cell_type, comparison_var) %>%
+  summarise(across(c(cell_counts, total_counts), sum)) %>%
+  ungroup() %>%
+  mutate(cell_prop = plyr::round_any(cell_counts/total_counts, accuracy = 0.001, f = ceiling)) %>%
+  dplyr::filter(cell_prop > 0.001) %>%
+  ggplot(aes(x = cell_type,
+             y = cell_prop,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = c("AT2" = "#42526e",
+                               "Fibroblasts (Total)" = "#c44601",
+                               "Endothelial cells (Total)" = "#b51963")) + 
+  geom_text(aes(label = cell_prop,
+                vjust = -2, 
+                hjust = 0.5),
+            size = 5) +
+  facet_wrap(~comparison_var) +
+  labs(x = "Cell type", 
+       y = "% aggregated cell type for each condition", 
+       fill = element_blank()) +
+  scale_x_reordered() +
+  ylim(0, 0.65) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 10),
+        strip.text = element_text(size = 15)) 
+```
+
+
+## 2.2: Cell type proportion - Per mice level - ATs, fibroblasts, and endothelial cells
+
+```{r cell proportion - per mice - selected cell types - UMAP, echo=FALSE, warning=FALSE, fig.height=6, fig.width=15, out.width="100%"}
+# Define list of cell types for each subgroups.
+alveolar_epi = WhichCells(seurat_cluster, idents = c("AT2", "AT2 proliferating"))
+fibroblasts = WhichCells(seurat_cluster, idents = c("Fibroblasts (Total)", "Myofibroblasts"))
+endothelial = WhichCells(seurat_cluster, idents = c("Endothelial cells (Total)"))
+
+# Visualize distribution of AT2, fibroblasts and endothelial cells by timepoints with UMAP.
+DimPlot(seurat_cluster,
+        reduction = "umap",
+        split.by = "timepoint",
+        cells.highlight = list(alveolar_epi,
+                               fibroblasts,
+                               endothelial),
+        cols.highlight = c("#b51963",
+                           "#c44601",
+                           "#42526e"),
+        sizes.highlight = 0.2,
+        ncol = 3) + 
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  NoLegend()
+
+# Remove unneeded objects.
+rm(alveolar_epi, endothelial, fibroblasts)
+```
+
+```{r per mice cell proportion - selected cell types - condition facet, echo=FALSE, warning=FALSE, message=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Plot the per-mice level cell proportion across conditions and timepoints.
+total_celltypes_per_condition %>%
+  dplyr::filter(cell_type %in% c("AT2", "Fibroblasts (Total)", "Endothelial cells (Total)")) %>%
+  mutate(mice_id = str_remove_all(mice_id, "_1$|_2$|_3$")) %>%
+  group_by(mice_id, cell_type, comparison_var) %>%
+  summarise(n = n(),
+            mean = plyr::round_any(mean(cell_prop), accuracy = 0.0001, f = ceiling),
+            sd = plyr::round_any(sd(cell_prop), accuracy = 0.0001, f = ceiling)) %>%
+  mutate(se = plyr::round_any(sd/sqrt(n), accuracy = 0.0001, f = ceiling)) %>%
+  ungroup() %>%
+  dplyr::filter(mean > 0.001) %>%
+  ggplot(aes(x = cell_type,
+             y = mean,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = c("AT2" = "#42526e",
+                               "Fibroblasts (Total)" = "#c44601",
+                               "Endothelial cells (Total)" = "#b51963")) + 
+  geom_errorbar(aes(ymin = mean-se,
+                    ymax = mean+se),
+                width = 0.4,
+                alpha = 0.9) +
+  geom_signif(comparisons = list(c("AT2", "Fibroblasts (Total)"),
+                                 c("Fibroblasts (Total)", "Endothelial cells (Total)"),
+                                 c("AT2", "Endothelial cells (Total)")),
+              map_signif_level = TRUE,
+              step_increase = 0.1,
+              textsize = 6) +
+  geom_text(aes(label = mean,
+                vjust = -3, 
+                hjust = 0.5),
+            size = 5) +
+  facet_wrap(~comparison_var) +
+  labs(x = "Cell type", 
+       y = "% cell type for each mouse as a proportion of total cells 
+       of the condition from that mouse (Mean +/- SE)", 
+       fill = element_blank()) +
+  scale_x_reordered() +
+  ylim(0, 0.8) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 10),
+        strip.text = element_text(size = 15)) 
+```
+
+
+```{r per mice cell proportion - selected cell types - cell type facet, echo=FALSE, warning=FALSE, message=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Plot the per-mice level cell proportion across conditions and timepoints.
+total_celltypes_per_condition %>%
+  dplyr::filter(cell_type %in% c("AT2", "Fibroblasts (Total)", "Endothelial cells (Total)")) %>%
+  mutate(mice_id = paste(mice_id, cell_type, sep = "_")) %>%
+  group_by(mice_id, cell_type, comparison_var) %>%
+  summarise(n = n(),
+            mean = plyr::round_any(mean(cell_prop), accuracy = 0.0001, f = ceiling),
+            sd = plyr::round_any(sd(cell_prop), accuracy = 0.0001, f = ceiling)) %>%
+  mutate(se = plyr::round_any(sd/sqrt(n), accuracy = 0.0001, f = ceiling)) %>%
+  ungroup() %>%
+  dplyr::filter(mean > 0.001) %>%
+  ggplot(aes(x = comparison_var,
+             y = mean,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = c("AT2" = "#42526e",
+                               "Fibroblasts (Total)" = "#c44601",
+                               "Endothelial cells (Total)" = "#b51963")) + 
+  geom_errorbar(aes(ymin = mean-se,
+                    ymax = mean+se),
+                width = 0.4,
+                alpha = 0.9) +
+  geom_signif(comparisons = list(c("Sham", "Bleomycin_Day 14"),
+                                 c("Bleomycin_Day 14", "Bleomycin_Day 35"),
+                                 c("Sham", "Bleomycin_Day 35")),
+              map_signif_level = TRUE,
+              step_increase = 0.1,
+              textsize = 6) +
+  geom_text(aes(label = mean,
+                vjust = -3, 
+                hjust = 0.5),
+            size = 5) +
+  facet_wrap(~cell_type) +
+  labs(x = "Cell type", 
+       y = "% cell type for each mouse as a proportion of total cells 
+       of the condition from that mouse (Mean +/- SE)", 
+       fill = element_blank()) +
+  scale_x_reordered() +
+  ylim(0, 1) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 10),
+        strip.text = element_text(size = 15)) 
+```
+
+
+We are testing with ANOVA from this site:
+
+https://www.datanovia.com/en/lessons/repeated-measures-anova-in-r/
+https://www.r-bloggers.com/2022/11/how-to-do-pairwise-comparisons-in-r/#google_vignette
+https://stackoverflow.com/questions/15535708/barplot-with-significant-differences-and-interactions
+https://stats.stackexchange.com/questions/88158/anova-terminology-repeated-measures-vs-within-between-subjects
+
+```{r ANOVA, eval=FALSE}
+# ANOVA Test
+total_celltypes_per_condition %>%
+  dplyr::filter(cell_type %in% c("AT2", "Fibroblasts (Total)", "Endothelial cells (Total)")) %>%
+  mutate(mice_id = str_remove_all(mice_id, "_1$|_2$|_3$")) %>%
+  group_by(mice_id, cell_type, comparison_var) %>% 
+  anova_test(dv = cell_prop, wid = paste(mice_id, cell_type, sep = "_"), between = c(cell_type, comparison_var)) %>% 
+  get_anova_table() %>% 
+  adjust_pvalue(method = "bonferroni")
+```
+
+
+```{r remove unneeded objects - cell proportion}
+# Remove unneeded objects.
+rm(n_cells, total_per_condition, total_celltypes_per_condition)
+```
+
+
+# 3: The role of ANTXR1 in fibrosis
+
+## 3.1: Define cell types of interest
+
+```{r cell type interest}
+# Define cell types of interest.
+cell_types_interest = c("AT2", "Fibroblasts (Total)", "Endothelial cells (Total)")
+```
+
+
+## 3.2: How much ANTXR1 expression in cell types of interest?
+
+```{r ANTXR1 dotplot, fig.height=8, fig.width=15, out.width="100%"}
+# Subset Seurat object to cell types of interest. 
+seurat_subset <- subset(seurat_cluster, subset = cell_type %in% cell_types_interest)
+
+# Get matrix from Seurat object.
+source("/Users/kendrix10/Documents/Work/UnityHealth/Data_Projects/GetMatrixFromSeuratByGroupSingle.R")
+mat <- GetMatrixFromSeuratByGroupSingle(obj = seurat_subset,
+                                        feature = "Antxr1",
+                                        group1 = cell_type,
+                                        group2 = timepoint)
+
+# Examine matrix output.
+mat$percent_mat
+quantile(mat$exp_mat, c(0.1, 0.5, 0.8, 0.9))
+
+# Visualize in a dotplot.
+require(ComplexHeatmap)
+col_fun <- circlize::colorRamp2(c(0, 0.3, 0.6), c("#FDE725FF", "#238A8DFF", "#440154FF"))
+
+layer_fun = function(j, i, x, y, w, h, fill){
+  grid.rect(x = x, y = y, width = w, height = h, gp = gpar(col = "gray", fill = NA))
+  grid.circle(x = x,y = y,r = sqrt(pindex(mat$percent_mat, i, j)) * unit(18, "mm"),
+              gp = gpar(fill = col_fun(pindex(mat$exp_mat, i, j)), col = NA))}
+
+hp <- Heatmap(mat$exp_mat,
+              heatmap_legend_param = list(title = "expression"),
+              column_title = "ANTXR1", 
+              col = col_fun,
+              rect_gp = gpar(type = "none"),
+              layer_fun = layer_fun,
+              row_names_gp = gpar(fontsize = 10),
+              border = "black",
+              cluster_rows = FALSE, 
+              cluster_columns = FALSE,
+              row_names_side  = "left")
+
+lgd_list = list(Legend(labels = c(0, 10, 25, 50, 75), title = "percentage",
+                       graphics = list(function(x, y, w, h) 
+                         grid.circle(x = x, y = y, r = 0 * unit(3, "mm"), 
+                                     gp = gpar(fill = "black")),
+                         function(x, y, w, h) grid.circle(x = x, y = y, r = sqrt(0.1) * unit(3, "mm"),
+                                                          gp = gpar(fill = "black")),
+                         function(x, y, w, h) grid.circle(x = x, y = y, r = sqrt(0.25) * unit(3, "mm"),
+                                                          gp = gpar(fill = "black")),
+                         function(x, y, w, h) grid.circle(x = x, y = y, r = sqrt(0.5) * unit(3, "mm"),
+                                                          gp = gpar(fill = "black")),
+                         function(x, y, w, h) grid.circle(x = x, y = y, r = sqrt(0.75) * unit(3, "mm"),
+                                                          gp = gpar(fill = "black"))),
+                       row_gap = unit(2.5, "mm")))
+
+draw(hp, annotation_legend_list = lgd_list, ht_gap = unit(1, "cm"), annotation_legend_side = "right")
+
+# Remove unneeded objects.
+rm(col_fun, GetMatrixFromSeuratByGroupSingle, hp, layer_fun, lgd_list, mat)
+```
+
+
+## 3.3: Create ANTXR1+ expression table
+
+```{r ANTXR1+ expression summary table}
+# Get the variables of interest.
+n_cells <- (FetchData(seurat_cluster,
+                      vars = c("mice_id", "cell_type", "comparison_var", "treatment", "timepoint", "Antxr1"))) 
+
+# Count total number of cells for each treatment + timepoint.
+total_per_condition <- (n_cells %>%
+                          dplyr::count(mice_id, comparison_var) %>%
+                          rename("n" = "total_counts"))
+
+# Count total non-zero ANTXR1+ cells for each treatment + timepoint.
+total_antxr1_per_condition <- (n_cells %>%
+                                 dplyr::filter(Antxr1 > 0) %>%
+                                 dplyr::count(mice_id, cell_type, comparison_var) %>%
+                                 rename("n" = "antxr1_count"))
+
+# Merge non-zero ANTXR1+ counts with the total counts for each condition per mice to calculate proportion. 
+total_antxr1_per_condition <- merge(total_antxr1_per_condition, total_per_condition,
+                                    by = c("mice_id", "comparison_var"))
+
+# Rearrange the variables into desired positions. 
+total_antxr1_per_condition <- total_antxr1_per_condition %>% arrange(cell_type, factor(comparison_var,
+                                                                                       levels = c("Sham",
+                                                                                                  "Bleomycin_Day 14",
+                                                                                                  "Bleomycin_Day 35")))
+```
+
+
+## 3.4: Aggregated ANTXR1+ expression per condition
+
+```{r ANTXR1 aggregated UMAP, warning=FALSE, echo=FALSE, fig.height=6, fig.width=15, out.width="100%"}
+# Visualize the ANTXR1+ cell type clusters.
+FeaturePlot(seurat_cluster, 
+            reduction = "umap", 
+            features = "Antxr1", 
+            split.by = "timepoint",
+            pt.size = 0.8,
+            label = TRUE,
+            label.size = 3,
+            repel = TRUE,
+            order = TRUE,
+            cols = c("#d3d3d3", "#edc9af", "#6e260e")) +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  patchwork::plot_layout(ncol = 3)
+```
+
+```{r aggregated non-zero ANTXR1 proportion, echo=FALSE, message=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Plot the aggregated cell proportion across conditions and timepoints.
+total_antxr1_per_condition %>%
+  dplyr::filter(cell_type %in% cell_types_interest) %>%
+  group_by(cell_type, comparison_var) %>%
+  summarise(across(c(antxr1_count, total_counts), sum)) %>%
+  ungroup() %>%
+  mutate(cell_prop = plyr::round_any(antxr1_count/total_counts, accuracy = 0.001, f = ceiling)) %>%
+  dplyr::filter(cell_prop > 0.001) %>%
+  ggplot(aes(x = cell_type,
+             y = cell_prop,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = c("AT2" = "#42526e",
+                               "Fibroblasts (Total)" = "#c44601",
+                               "Endothelial cells (Total)" = "#b51963")) +
+  geom_text(aes(label = cell_prop,
+                vjust = -2, 
+                hjust = 0.5),
+            size = 5) +
+  facet_wrap(~comparison_var) +
+  labs(x = "Cell type", 
+       y = "% aggregated cell types that are ANTXR1+ in each condition", 
+       fill = element_blank()) +
+  scale_x_reordered() +
+  ylim(0, 0.25) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 90,
+                                   hjust = 1),
+        strip.text = element_text(size = 15)) 
+```
+
+
+## 3.5: Per mice level ANTXR1+ expression per condition
+
+```{r ANTXR1 per mice level UMAP, warning=FALSE, echo=FALSE, fig.height=6, fig.width=15, out.width="100%"}
+# Visualize the ANTXR1+ cell type clusters.
+FeaturePlot(seurat_cluster, 
+            reduction = "umap", 
+            features = "Antxr1", 
+            split.by = "timepoint",
+            pt.size = 0.8,
+            label = TRUE,
+            label.size = 3,
+            repel = TRUE,
+            order = TRUE,
+            cols = c("#d3d3d3", "#edc9af", "#6e260e")) +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  patchwork::plot_layout(ncol = 3)
+```
+
+```{r per mice-level non-zero ANTXR1 proportion, echo=FALSE, message=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Plot the per mice-level cell proportion across conditions and timepoints.
+total_antxr1_per_condition %>%
+  dplyr::filter(cell_type %in% cell_types_interest) %>%
+  mutate(cell_prop = plyr::round_any(antxr1_count/total_counts, accuracy = 0.001, f = ceiling)) %>%
+  mutate(mice_id = str_remove_all(mice_id, "_1$|_2$|_3$")) %>%
+  group_by(mice_id, cell_type, comparison_var) %>%
+  summarise(n = n(),
+            mean = plyr::round_any(mean(cell_prop), accuracy = 0.0001, f = ceiling),
+            sd = plyr::round_any(sd(cell_prop), accuracy = 0.0001, f = ceiling)) %>%
+  mutate(se = plyr::round_any(sd/sqrt(n), accuracy = 0.0001, f = ceiling)) %>%
+  ungroup() %>%
+  dplyr::filter(mean > 0.001) %>%
+  ggplot(aes(x = cell_type,
+             y = mean,
+             fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = c("AT2" = "#42526e",
+                               "Fibroblasts (Total)" = "#c44601",
+                               "Endothelial cells (Total)" = "#b51963")) +
+  geom_errorbar(aes(ymin = mean-se,
+                    ymax = mean+se),
+                width = 0.4,
+                alpha = 0.9) +
+  geom_text(aes(label = mean,
+                vjust = -5, 
+                hjust = 0.5),
+            size = 5) +
+  facet_wrap(~comparison_var) +
+  labs(x = "Cell type", 
+       y = "% ANTXR1+ cell type as a proportion of total cells of each condition 
+       from that mouse (Mean +/- SE)", 
+       fill = element_blank()) +
+  scale_x_reordered() +
+  ylim(0, 0.25) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12,
+                                   angle = 90,
+                                   hjust = 1),
+        strip.text = element_text(size = 15)) 
+```
+
+
+# 4: Miscellaneous
+
+## 4.1: COL1A2- fibroblasts 
+
+## 3.5: Per mice level ANTXR1+ expression per condition
+
+```{r ACTA2 COL1A2 UMAP, warning=FALSE, echo=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Visualize the ANTXR1+ cell type clusters.
+FeaturePlot(seurat_cluster, 
+            reduction = "umap", 
+            features = c("Acta2", "Col1a2"), 
+            split.by = "timepoint",
+            pt.size = 0.8,
+            label = TRUE,
+            label.size = 3,
+            repel = TRUE,
+            order = TRUE,
+            cols = c("#d3d3d3", "#edc9af", "#6e260e")) +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  patchwork::plot_layout(ncol = 3)
+```
+
+
+
+
+
+
+
+# References
+
+Analysis codes are adapted from [HBCtraining](https://hbctraining.github.io/scRNA-seq_online/lessons/08_SC_clustering_quality_control.html) and [Ouyang Lab](https://ouyanglab.com/singlecell/clust.html) with credits going to the original authors of the publications cited in the book. 
+

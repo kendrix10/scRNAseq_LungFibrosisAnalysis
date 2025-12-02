@@ -1,0 +1,2380 @@
+---
+title: "GSE264162 Bleomycin Lung Analysis"
+author: "Kendrix Kek"
+date: "2024-07-21"
+output:
+  html_document:
+    theme: sandstone
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, message = FALSE}
+library(GEOquery)
+library(crayon)
+library(tidyverse)
+library(Seurat)
+library(SeuratData)
+library(Azimuth)
+library(patchwork)
+library(Matrix)
+library(Matrix.utils)
+library(RCurl)
+library(nichenetr)
+library(DoubletFinder)
+library(reactable)
+library(scales)
+library(SoupX)
+library(cowplot)
+library(metap)
+library(SingleCellExperiment)
+library(DropletUtils)
+library(AnnotationHub)
+library(HGNChelper)
+library(ensembldb)
+library(EnhancedVolcano)
+library(multtest)
+library(glmGamPoi)
+library(pbapply)
+library(data.table)
+library(pheatmap)
+library(ggrepel)
+library(ggpubr)
+library(stringr)
+library(canvasXpress)
+library(clinfun)
+library(GGally)
+library(factoextra)
+library(DESeq2)
+library(limma)
+library(fgsea)
+library(org.Mm.eg.db)
+library(kableExtra)
+```
+
+
+# Experimental design
+
+**GEO Accession**: GSE264162
+
+**Publication Title**: Lung injury-induced activated endothelial cell states persist in aging-associated progressive fibrosis (2024)
+
+**Authors**: Ahmed A. Raslan, Tho X. Pham, Jisu Lee, Konstantinos Kontodimas, Andrew Tilston-Lunel, Jillian Schmottlach, Jeongmin Hong, Taha Dinc, Andreea M. Bujor, Nunzia Caporarello, Aude Thiriot, Ulrich H. von Andrian, Steven K. Huang, Roberto F. Nicosia, Maria Trojanowska, Xaralabos Varelas, Giovanni Ligresti
+
+**Publication**: Nature Communications
+
+---
+
+**Rationale**: Progressive lung fibrosis is associated with poorly understood aging-related endothelial cell dysfunction. Pulmonary fibrosis is characterized by alveolar damage and the accumulation of collagen-producing fibroblasts that contribute to excessive extracellular matrix deposition and loss of organ function. Endothelial cells from aged mouse lungs with sustained fibrosis exhibit reduced expression of endothelial identity genes and increased expression of inflammatory- and fibrosis-associated genes compared to young animals. 
+
+Subpopulations of activated endothelial cell are prevalent in lungs of aged mice and can also be detected in human fibrotic lungs. Longitudinal single cell RNA-sequencing combined with lineage tracing reveal that injury-associated endothelial states transiently appear during the peak of collagen production and vanish during the resolution phase in young lungs. Conversely, endothelial cells derived from aged lungs persist in the activated states and are topologically restricted to fibrotic areas, indicating a failure of the aged vascular endothelial cells to return to quiescence. Differential transcriptional analysis together with pathway evaluation identify putative genes and signaling pathways associated with metabolism, such as glycolysis and oxidative phosphorylation, and upstream regulators, such as MYC, mTOR and YAP/TAZ that likely contribute to the appearance and pathogenic persistence of activated endothelial cells with aging. YAP/TAZ can cooperate with BDNF, a TrkB ligand that is reduced in fibrotic lungs to promote capillary morphogenesis.
+
+**Methodology**: Single-cell RNA profiling of whole lungs of young mice (2 months) and aged mice (18 months) with a single dose of intratracheal bleomycin instillation. Lungs were isolated at the early resolution phase of fibrosis (30 days post-bleomycin) and compared to saline-treated young and aged lungs. 15 distinct lung cell types were defined from approximately 52,542 cells with vascular endothelial cells being ht emost represented cellular subtype. The authors then reclustered the Cdh5+ and Pecam-1+ endothelial cells to identify different endothelial subpopulations. They identified 9 vascular endothelial cell subclusters including those form the veins, arteries, general capillaries (gCap) and aerocytes. Within these subclusters, there were 4 subclusters that emerged exclusively in bleomycin-treated lungs, which were defined as "activated" gCap endothelial cells, "activated" aCap endothelial cells, "activated" arterial endothelial cells and "activated" venous endothelial cells as they shared the common markers of cell activation, including Fxdy5, Spp1, Ankrd37, Lrg1, and Amd1.
+
+<center>
+
+![Fig. 1: Experimental Design](/Users/kendrix10/Documents/Work/UnityHealth/Data_Projects/Bleomycin_Lung_Fibrosis/GSE264151/plots/Fig.1_Experimental_design.png)
+
+</center>
+
+
+# 1: Global cell type proportions by timepoint
+
+## 1.1: Load pre-processed Seurat objects
+
+```{r load pre-processed seurat objects}
+# Specify project file path. 
+project_path = "/Users/kendrix10/Documents/Work/UnityHealth/Data_Projects/Bleomycin_Lung_Fibrosis/GSE264162/"
+
+# Load pre-processed Seurat objects.
+load(file = paste0(project_path, "data/preprocessed_seurat_obj.RData"))
+
+# Get metadata column and rename.
+metadata = (seurat_cluster@meta.data %>%
+              subset(select = -cell_type) %>%
+              rename("orig.ident" = "mice_id",
+                     "predicted.ann_finest_level" = "cell_type"))
+
+# Add edited metadata back to Seurat object.
+seurat_cluster@meta.data <- metadata
+
+# Collapse some of the cell types together (fibroblasts, endothelial cells, lymphatic endothelial cells).
+# Find unique fibroblasts in the data and collapse.
+grep("fibroblast", seurat_cluster$cell_type, value = TRUE) %>% unique()
+seurat_cluster$cell_type <- gsub("Adventitial fibroblasts", "Fibroblasts (Total)",
+                                 gsub("Alveolar fibroblasts", "Fibroblasts (Total)",
+                                      gsub("Peribronchial fibroblasts", "Fibroblasts (Total)",
+                                           gsub("Subpleural fibroblasts", "Fibroblasts (Total)",
+                                                seurat_cluster$cell_type))))
+
+# Find unique endothelial cells in the data and collapse.
+grep("EC", seurat_cluster$cell_type, value = TRUE) %>% unique()
+seurat_cluster$cell_type <- gsub("EC general capillary", "Endothelial cells (Total)",
+                                 gsub("EC venous pulmonary", "Endothelial cells (Total)",
+                                      gsub("EC venous systemic", "Endothelial cells (Total)",
+                                           gsub("EC arterial", "Endothelial cells (Total)",
+                                                gsub("EC aerocyte capillary", "Endothelial cells (Total)",
+                                                     seurat_cluster$cell_type)))))
+
+# Find unique lympathic endothelial cells in the data and collapse.
+grep("EC", seurat_cluster$cell_type, value = TRUE) %>% unique()
+seurat_cluster$cell_type <- gsub("Lymphatic EC mature", "Lymphatic endothelial cells (Total)",
+                                 gsub("Lymphatic EC differentiating", "Lymphatic endothelial cells (Total)",
+                                      gsub("Lymphatic EC proliferating", "Lymphatic endothelial cells (Total)", 
+                                           seurat_cluster$cell_type)))
+
+# Factorize the cell identities according to cell lineages.
+cell_type_order = c("Basal resting", "Suprabasal", "Multiciliated (nasal)", "Multiciliated (non-nasal)", 
+                    "Deuterosomal", "Goblet (nasal)", "Club (nasal)", "Club (non-nasal)", "Ionocyte", 
+                    "SMG duct", "AT1", "AT2", "AT2 proliferating", "Transitional Club-AT2", 
+                    "Smooth muscle", "SM activated stress response", "Fibromyocytes", 
+                    "Fibroblasts (Total)", "Myofibroblasts", "Mesothelium", "Pericytes", 
+                    "Endothelial cells (Total)", "Lymphatic endothelial cells (Total)",
+                    "Alveolar macrophages", "Plasma cells", "DC2", "Non-classical monocytes", 
+                    "Mast cells", "B cells", "CD4 T cells", "CD8 T cells", "Neuroendocrine")
+
+seurat_cluster$cell_type = factor(x = seurat_cluster$cell_type, levels = cell_type_order)
+
+# Factorize the timepoint according to sequential order.
+seurat_cluster$timepoint <- factor(x = seurat_cluster$timepoint,
+                                   levels = c("Sham", "Day 14", "Day 35"))
+
+# Create a column in metadata slot that holds the treatment and timepoint information.
+seurat_cluster$comparison_var = ifelse(seurat_cluster$timepoint == "Sham",
+                                       "Sham", 
+                                       paste(seurat_cluster$treatment,                     
+                                             seurat_cluster$timepoint,
+                                             sep = "_"))
+
+# Set default idents of Seurat object.
+Idents(seurat_cluster) <- "cell_type"
+
+# Remove unneeded object.
+rm(cell_type_order, seurat_annotated, metadata)
+```
+
+
+## Step 1.2: UMAP cell types by variables of interest
+
+### Step 1.2.1: UMAP cell types by treatment
+
+Using a UMAP, we can visualize the proportion of each cell type for each treatment group. 
+
+```{r experimental treatment umap, warning=FALSE, fig.height=10, fig.width=15, out.width="100%"}
+# Visualize distribution of cells by experimental treatment in with UMAP.
+DimPlot(seurat_cluster,
+        reduction = "umap",
+        group.by = "cell_type",
+        split.by = "comparison_var",
+        label = TRUE,
+        label.size = 4,
+        label.color = "#6e260e",
+        repel = TRUE,
+        order = TRUE) + 
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  NoLegend()
+```
+
+
+### Step 1.2.2: UMAP cell types by timepoint 
+
+Using a UMAP, we can visualize the proportion of each cell type for each timepoint from bleomycin-induced mice.
+
+```{r experimental timepoint - bleomycin umap, fig.height=6, fig.width=15, out.width="100%"}
+# Visualize distribution of AT2 cells by timepoint in with UMAP.
+DimPlot(seurat_cluster,
+        reduction = "umap",
+        split.by = "timepoint",
+        cells.highlight = list(WhichCells(seurat_cluster, idents = c("AT2", "AT2 proliferating"))),
+        cols.highlight = "#6e260e",
+        sizes.highlight = 0.2,
+        ncol = 3) + 
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  NoLegend()
+
+# Visualize distribution of AT1 cells by timepoint in with UMAP.
+DimPlot(seurat_cluster,
+        reduction = "umap",
+        split.by = "timepoint",
+        cells.highlight = list(WhichCells(seurat_cluster, idents = c("AT1"))),
+        cols.highlight = "#b8860b",
+        sizes.highlight = 0.2,
+        ncol = 3) + 
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  NoLegend()
+
+# Visualize distribution of fibroblasts by timepoint in with UMAP.
+DimPlot(seurat_cluster,
+        reduction = "umap",
+        split.by = "timepoint",
+        cells.highlight = list(WhichCells(seurat_cluster, idents = c("Alveolar fibroblasts",
+                                                                     "Adventitial fibroblasts",
+                                                                     "Peribronchial fibroblasts",
+                                                                     "Subpleural fibroblasts",
+                                                                     "Myofibroblasts"))),
+        cols.highlight = "#00001c",
+        sizes.highlight = 0.2,
+        ncol = 3) + 
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  NoLegend()
+```
+
+
+## Step 1.3: Cell type proportion by variables of interest
+
+### Step 1.3.1: Cell type proportion by timepoint
+
+Based on the split UMAPs, we can see that the proportion of cells represented for each cell type is different. We can quantify this further with the barplot for each cell type below.
+
+```{r cell type proportion by timepoint, fig.height=8, fig.width=15, out.width="100%"}
+# Get the names of fibroblasts in the data.
+grep("fibroblast", seurat_cluster$predicted.ann_finest_level, value = TRUE) %>% unique()  
+# Alveolar fibroblasts, adventitial fibroblasts, peribronchial fibroblasts, myofibroblasts.
+
+# Get the names of the endothelial cells in the data.
+grep("EC", seurat_cluster$predicted.ann_finest_level, value = TRUE) %>% unique()
+# EC general capillary, EC aerocyte capillary, EC arterial, EC venous systemic, EC venous pulmonary. 
+
+# Define cell types of interest.
+cell_types_interest = c("AT1", "AT2", "Alveolar fibroblasts", "Adventitial fibroblasts",
+                        "Peribronchial fibroblasts", "Myofibroblasts", 
+                        "EC arterial", "EC venous pulmonary", "EC venous systemic",
+                        "EC general capillary", "EC aerocyte capillary")
+
+# Count the number of cells per cell type for each experimental treatment. 
+n_cells <- FetchData(seurat_cluster,
+                     vars = c("predicted.ann_finest_level", "treatment", "timepoint")) %>%
+  rename("predicted.ann_finest_level" = "cell_type")
+
+# Get the total counts for each treatment. 
+total_cells <- (n_cells %>% 
+                  dplyr::count(timepoint) %>%
+                  rename("n" = "total_counts"))
+
+# Get the counts per cell type per treatment. 
+n_cells <- (n_cells %>% 
+              dplyr::count(cell_type, treatment, timepoint) %>%
+              dplyr::filter(cell_type %in% cell_types_interest) %>%
+              rename("n" = "cell_counts"))
+
+# Merge total counts to the cell counts based on variables of interest. 
+n_cells <- merge(n_cells, total_cells, by = "timepoint")
+
+# Get the fibroblast counts and aggregate.
+fibroblast_counts <- (n_cells %>%
+                        dplyr::filter(cell_type %in% grep("fibroblast", n_cells$cell_type, value = TRUE)) %>%
+                        group_by(timepoint, treatment) %>%
+                        summarise(across(cell_counts, sum)) %>%
+                        as.data.frame())
+fibroblast_counts <- cbind(cell_type = "Fibroblasts (Total)", fibroblast_counts)
+fibroblast_counts <- merge(fibroblast_counts, total_cells, by = "timepoint")
+
+# Rowbind aggregated fibroblast counts to the n_cells dataframe.
+all(colnames(fibroblast_counts) == colnames(n_cells)) # TRUE.
+n_cells <- rbind(n_cells, fibroblast_counts)
+
+# Get the EC counts and aggregate.
+endothelial_counts <- (n_cells %>%
+                         dplyr::filter(cell_type %in% grep("EC", n_cells$cell_type, value = TRUE)) %>%
+                         group_by(timepoint, treatment) %>%
+                         summarise(across(cell_counts, sum)) %>%
+                         as.data.frame())
+endothelial_counts <- cbind(cell_type = "Endothelial cells (Total)", endothelial_counts)
+endothelial_counts <- merge(endothelial_counts, total_cells, by = "timepoint")
+
+# Rowbind aggregated fibroblast counts to the n_cells dataframe.
+all(colnames(endothelial_counts) == colnames(n_cells)) # TRUE.
+n_cells <- rbind(n_cells, endothelial_counts)
+
+# Calculate proportion of cells in the timepoint as a proportion of total cells of the cell types. 
+n_cells$cell_prop = plyr::round_any((n_cells$cell_counts / n_cells$total_counts), accuracy = 0.001, f = ceiling)
+n_cells <- n_cells %>% arrange(cell_type, timepoint, desc(treatment))
+kable(n_cells)
+
+# Create a new plotting category.
+n_cells$comparison_var <- paste0(n_cells$cell_type, ifelse(n_cells$timepoint == "Sham", "", "_Bleomycin"), "_", n_cells$timepoint)
+
+# Relevel new category.
+n_cells$comparison_var = factor(n_cells$comparison_var, 
+                                levels = c("AT2_Sham", "AT2_Bleomycin_Day 14", "AT2_Bleomycin_Day 35",
+                                           "AT1_Sham", "AT1_Bleomycin_Day 14", "AT1_Bleomycin_Day 35",
+                                           "Fibroblasts (Total)_Sham", "Fibroblasts (Total)_Bleomycin_Day 14", 
+                                           "Fibroblasts (Total)_Bleomycin_Day 35",
+                                           "Alveolar fibroblasts_Sham", "Alveolar fibroblasts_Bleomycin_Day 14",
+                                           "Alveolar fibroblasts_Bleomycin_Day 35",
+                                           "Peribronchial fibroblasts_Sham", "Peribronchial fibroblasts_Bleomycin_Day 14",
+                                           "Peribronchial fibroblasts_Bleomycin_Day 35",
+                                           "Adventitial fibroblasts_Sham", "Adventitial fibroblasts_Bleomycin_Day 14",
+                                           "Adventitial fibroblasts_Bleomycin_Day 35",
+                                           "Myofibroblasts_Sham", "Myofibroblasts_Bleomycin_Day 14", 
+                                           "Myofibroblasts_Bleomycin_Day 35",
+                                           "Endothelial cells (Total)_Sham", "Endothelial cells (Total)_Bleomycin_Day 14",
+                                           "Endothelial cells (Total)_Bleomycin_Day 35",
+                                           "EC arterial_Sham", "EC arterial_Bleomycin_Day 14",
+                                           "EC arterial_Bleomycin_Day 35",
+                                           "EC venous pulmonary_Sham", "EC venous pulmonary_Bleomycin_Day 14",
+                                           "EC venous pulmonary_Bleomycin_Day 35",
+                                           "EC venous systemic_Sham", "EC venous systemic_Bleomycin_Day 14",
+                                           "EC venous systemic_Bleomycin_Day 35",
+                                           "EC general capillary_Sham", "EC general capillary_Bleomycin_Day 14",
+                                           "EC general capillary_Bleomycin_Day 35",
+                                           "EC aerocyte capillary_Sham", "EC aerocyte capillary_Bleomycin_Day 14",
+                                           "EC aerocyte capillary_Bleomycin_Day 35"))
+
+# Plot barplot for the proportion of cells per cell type for each experimental treatment.
+ggplot(n_cells, 
+       aes(x = comparison_var, 
+           y = cell_prop, 
+           fill = cell_type)) +
+  geom_bar(position = "stack", 
+           stat = "identity") +
+  geom_text(aes(label = cell_prop), 
+            size = 3,
+            vjust = -1) +
+  scale_fill_manual(values = c("AT1" = "#b8860b",
+                               "AT2" = "#6e260e",
+                               "Fibroblasts (Total)" = "#00001c",
+                               "Endothelial cells (Total)" = "#00a86b",
+                               "Alveolar fibroblasts" = "#fa8072",
+                               "Peribronchial fibroblasts" = "#c06c84",
+                               "Adventitial fibroblasts" = "#959d90",
+                               "Myofibroblasts" = "#003151",
+                               "EC aerocyte capillary" = "#4b5320",
+                               "EC venous pulmonary" = "#568203",
+                               "EC venous systemic" = "#74c365",
+                               "EC general capillary" = "#d8e4bc",
+                               "EC arterial" = "#a8e4a0")) +
+  ylim(0, 0.6) +
+  labs(x = "Comparisons", y = "Cell type proportion") +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 10, 
+                                   angle = 90,
+                                   vjust = 0.5,
+                                   hjust = 1))
+```
+
+
+### Step 1.3.2: Cell type proportion by timepoint - Aggregated
+
+```{r cell type proportion by timepoint - aggregated, fig.height=8, fig.width=15, out.width="100%"}
+# Subset AT1, AT2, aggregated fibroblasts and aggregated ECs only.
+n_cells_subset <- n_cells %>% dplyr::filter(cell_type %in% c("AT1", "AT2", "Fibroblasts (Total)", "Endothelial cells (Total)"))
+
+# Plot barplot for the proportion of cells per cell type for each experimental treatment.
+ggplot(n_cells_subset, 
+       aes(x = comparison_var, 
+           y = cell_prop, 
+           fill = cell_type)) +
+  geom_bar(position = "stack", 
+           stat = "identity") +
+  geom_text(aes(label = cell_prop), 
+            size = 5,
+            vjust = -1) +
+  scale_fill_manual(values = c("AT1" = "#b8860b",
+                               "AT2" = "#6e260e",
+                               "Fibroblasts (Total)" = "#00001c",
+                               "Endothelial cells (Total)" = "#00a86b")) +
+  ylim(0, 0.6) +
+  labs(x = "Comparisons", y = "Cell type proportion") +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 10, 
+                                   angle = 90,
+                                   vjust = 0.5,
+                                   hjust = 1))
+```
+
+
+## Step 1.4: Summary table
+
+```{r table of counts and ANTXR1 levels}
+# Define cell types of interest.
+cell_types_interest = c("AT1", "AT2", "Alveolar fibroblasts", "Adventitial fibroblasts",
+                        "Peribronchial fibroblasts", "Myofibroblasts",
+                        "EC venous pulmonary", "EC general capillary", "EC arterial", 
+                        "EC venous systemic", "EC aerocyte capillary")
+
+# Get the variables of interest.
+n_cells <- (FetchData(seurat_cluster, vars = c("title", 
+                                               "predicted.ann_finest_level", 
+                                               "comparison_var", 
+                                               "treatment", 
+                                               "timepoint", 
+                                               "Antxr1")) %>%
+              rename("predicted.ann_finest_level" = "cell_type")) 
+
+# Get table of cells per comparison variable.
+total_cells <- (n_cells %>% 
+                  dplyr::count(timepoint) %>%
+                  rename("n" = "total_counts"))
+
+# Get table of cell counts per cell type per treatment per mouse.
+cell_counts <- (n_cells %>% 
+                  dplyr::filter(cell_type %in% cell_types_interest) %>%
+                  dplyr::count(title, cell_type, treatment, timepoint) %>%
+                  rename("n" = "cell_counts"))
+cell_counts <- cell_counts %>% arrange(cell_type, desc(treatment), timepoint)
+
+# Get table of ANTXR1-expressing cells per cell type per treatment per mouse.
+antxr1_cell_counts <- (n_cells %>%
+                         dplyr::filter(Antxr1 > 0) %>%
+                         dplyr::filter(cell_type %in% cell_types_interest) %>%
+                         dplyr::count(title, cell_type, treatment, timepoint) %>%
+                         rename("n" = "antxr1_cell_counts"))
+antxr1_cell_counts <- antxr1_cell_counts %>% arrange(cell_type, desc(treatment), timepoint)
+
+# Get table of summed ANTXR1 expression per cell type per treatment per mouse.
+antxr1_summed_exprs <- (n_cells %>%
+                          dplyr::filter(cell_type %in% cell_types_interest) %>%
+                          group_by(title, cell_type, treatment, timepoint) %>%
+                          summarise(across(Antxr1, sum)) %>%
+                          as.data.frame())
+antxr1_summed_exprs <- antxr1_summed_exprs %>% arrange(cell_type, desc(treatment), timepoint)
+
+# Merge all the tables together into a giant table.
+all(cell_counts$title %in% antxr1_cell_counts$title) # TRUE.
+all(cell_counts$title %in% antxr1_summed_exprs$title) # TRUE.
+all(antxr1_cell_counts$title %in% antxr1_summed_exprs$title) # TRUE.
+dataset_summary <- merge(cell_counts, antxr1_cell_counts, 
+                         by = c("title", "cell_type", "treatment", "timepoint"),
+                         all = TRUE)
+dataset_summary <- merge(dataset_summary, antxr1_summed_exprs,
+                         by = c("title", "cell_type", "treatment", "timepoint"),
+                         all = TRUE)
+dataset_summary <- dataset_summary %>% arrange(cell_type, desc(treatment), timepoint)
+kable(dataset_summary)
+
+# Remove unneeded objects.
+rm(cell_counts, antxr1_cell_counts, antxr1_summed_exprs)
+```
+
+
+
+
+
+
+
+
+
+
+# Step 2: The role of ANTXR1 in regulating fibrosis
+
+## Step 2.1: Which cell types express ANTXR1?
+
+```{r ANTXR1 expression dotplot - all cell types, echo=FALSE, warning = FALSE, fig.height=20, fig.width=15, out.width="100%"}
+DotPlot(seurat_cluster,
+        features = c("Antxr1"),
+        split.by = "timepoint",
+        cols = c("#b8860b", "#fa8072", "#00001c"),
+        cluster.idents = TRUE,
+        dot.min = 0.1,
+        dot.scale = 6,
+        scale.by = "size") +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 12)) 
+```
+
+
+## Step 2.2: Expression comparison between cell types
+
+```{r ANTXR1 expression dotplot - cell type interest, echo=FALSE, warning = FALSE, fig.height=8, fig.width=15, out.width="100%"}
+DotPlot(seurat_cluster,
+        features = c("Antxr1", "Anxa2", "Col1a1", "Col1a2", "Col6a1", "Col6a2", "Col6a3"),
+        idents = cell_types_interest,
+        split.by = "timepoint",
+        cols = c("#b8860b", "#fa8072", "#00001c", "#959d90", "#e78f54", "#543131",
+                 "#baa980", "#84c981", "#8da7b4", "#763879", "#75668a", "#56998b",
+                 "#c18178", "#493b4c", "#c39e2c", "#cca977", "#c0c0c0", "#38220f"),
+        dot.scale = 6,
+        scale.by = "radius") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+```
+
+
+## Step 2.3: ANTXR1-expressing cell types UMAP
+
+Let's see which cell types express ANTXR1 and the difference in expression across variables of interest. 
+
+```{r ANTXR1 UMAP, warning=FALSE, fig.height=6, fig.width=15, out.width="100%"}
+# Plot the UMAP of ANTXR1 expression across all cell types.
+FeaturePlot(seurat_cluster, 
+            reduction = "umap", 
+            features = "Antxr1", 
+            split.by = "timepoint",
+            pt.size = 0.8,
+            label = TRUE,
+            label.size = 3,
+            repel = TRUE,
+            order = TRUE,
+            cols = c("#d3d3d3", "#edc9af", "#6e260e")) +
+  theme(axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8)) +
+  patchwork::plot_layout(ncol = 3)
+```
+
+
+## Step 2.4: ANTXR1 expression across treatments and timepoints
+
+We can plot a dotplot of ANTXR1 expression across cell types across timepoint. 
+
+```{r dotplot - cell types - timepoint, fig.height=8, fig.width=15, out.width="100%"}
+# Subset Seurat object to get only cell types of interest. 
+seurat_subset <- subset(seurat_cluster, subset = predicted.ann_finest_level %in% cell_types_interest)
+
+# Get matrix from Seurat object.
+source("/Users/kendrix10/Documents/Work/UnityHealth/Data_Projects/GetMatrixFromSeuratByGroupSingle.R")
+mat <- GetMatrixFromSeuratByGroupSingle(obj = seurat_subset,
+                                        feature = "Antxr1",
+                                        group1 = predicted.ann_finest_level,
+                                        group2 = timepoint)
+
+# Examine matrix output.
+mat$percent_mat
+quantile(mat$exp_mat, c(0.1, 0.5, 0.8, 0.9))
+
+# Visualize in a dotplot.
+require(ComplexHeatmap)
+col_fun <- circlize::colorRamp2(c(0, 1, 2), c("#FDE725FF", "#238A8DFF", "#440154FF"))
+
+layer_fun = function(j, i, x, y, w, h, fill){
+  grid.rect(x = x, y = y, width = w, height = h, gp = gpar(col = "gray", fill = NA))
+  grid.circle(x = x,y = y,r = sqrt(pindex(mat$percent_mat, i, j)) * unit(4, "mm"),
+              gp = gpar(fill = col_fun(pindex(mat$exp_mat, i, j)), col = NA))}
+
+hp <- Heatmap(mat$exp_mat,
+              heatmap_legend_param = list(title = "expression"),
+              column_title = "ANTXR1", 
+              col = col_fun,
+              rect_gp = gpar(type = "none"),
+              layer_fun = layer_fun,
+              row_names_gp = gpar(fontsize = 8),
+              border = "black",
+              cluster_rows = FALSE, 
+              cluster_columns = FALSE,
+              row_names_side  = "left")
+
+lgd_list = list(Legend(labels = c(0, 10, 25, 50, 75), title = "percentage",
+                       graphics = list(function(x, y, w, h) 
+                         grid.circle(x = x, y = y, r = 0 * unit(4, "mm"), 
+                                     gp = gpar(fill = "black")),
+                         function(x, y, w, h) grid.circle(x = x, y = y, r = sqrt(0.1) * unit(4, "mm"),
+                                                          gp = gpar(fill = "black")),
+                         function(x, y, w, h) grid.circle(x = x, y = y, r = sqrt(0.25) * unit(4, "mm"),
+                                                          gp = gpar(fill = "black")),
+                         function(x, y, w, h) grid.circle(x = x, y = y, r = sqrt(0.5) * unit(4, "mm"),
+                                                          gp = gpar(fill = "black")),
+                         function(x, y, w, h) grid.circle(x = x, y = y, r = sqrt(0.75) * unit(4, "mm"),
+                                                          gp = gpar(fill = "black"))),
+                       row_gap = unit(2.5, "mm")))
+
+draw(hp, annotation_legend_list = lgd_list, ht_gap = unit(1, "cm"), annotation_legend_side = "right")
+
+# Remove unneeded objects.
+rm(col_fun, GetMatrixFromSeuratByGroupSingle, hp, layer_fun, lgd_list, mat)
+```
+
+
+## Step 2.5: Proportion of ANTXR1-expressing cell types / Total cells per condition
+
+We can check the proportion of the ANTXR1 expressing cell types from the UMAP above to determine if the expression is uniform across all cell types of interest. 
+
+```{r ANTXR1+ exprs per total cells per condition, fig.height=8, fig.width=15, out.width="100%"}
+# Get the variables of interest.
+n_cells <- (FetchData(seurat_cluster, vars = c("predicted.ann_finest_level", "treatment", "timepoint", "Antxr1")) %>%
+              rename("predicted.ann_finest_level" = "cell_type")) 
+
+# Get total cells per timepoint.
+total_cells <- (n_cells %>%
+                  dplyr::count(timepoint, treatment) %>%
+                  rename("n" = "total_counts"))
+
+# Count the ANTXR1 expressing cells per timepoint.
+n_antxr1_celltypes <- (n_cells %>%
+                         dplyr::filter(Antxr1 > 0) %>%
+                         dplyr::count(cell_type, timepoint, treatment) %>%
+                         rename("n" = "antxr1_counts"))
+
+# Merge total cells to ANTXR1-expressing cells per timepoint.
+antxr1_celltype_comp <- merge(n_antxr1_celltypes, total_cells, by = c("timepoint", "treatment"))
+
+# Rearrange dataframe columns.
+antxr1_celltype_comp <- antxr1_celltype_comp %>% dplyr::select(cell_type, treatment, timepoint, antxr1_counts, total_counts)
+
+# Calculate the proportion of ANTXR1-expressing cells in proportion to total cells per cell type. 
+antxr1_celltype_comp$Antxr1_prop = plyr::round_any((antxr1_celltype_comp$antxr1_counts / antxr1_celltype_comp$total_counts), 
+                                                   accuracy = 0.001, 
+                                                   f = ceiling)
+antxr1_celltype_comp <- antxr1_celltype_comp %>% arrange(cell_type, timepoint, desc(treatment))
+kable(antxr1_celltype_comp)
+
+# Subset cell type of interest.
+antxr1_celltype_comp <- antxr1_celltype_comp %>% dplyr::filter(cell_type %in% cell_types_interest)
+
+# Get fibroblast counts and aggregate.
+fibroblast_counts <- (antxr1_celltype_comp %>% 
+                        dplyr::filter(cell_type %in% grep("fibroblast", antxr1_celltype_comp$cell_type, value = TRUE)) %>%
+                        group_by(timepoint, treatment) %>%
+                        summarise(across(antxr1_counts, sum)) %>% 
+                        as.data.frame())
+
+# Merge fibroblast counts with total counts and add name.
+fibroblast_counts <- merge(fibroblast_counts, total_cells, by = c("treatment", "timepoint"))
+fibroblast_counts <- cbind(cell_type = "Fibroblasts (Total)", fibroblast_counts)
+
+# Calculate the proportion of ANTXR1-expressing cells in proportion to total cells per cell type. 
+fibroblast_counts$Antxr1_prop = plyr::round_any((fibroblast_counts$antxr1_counts / fibroblast_counts$total_counts), 
+                                                   accuracy = 0.001, 
+                                                   f = ceiling)
+
+# Rowbind the fibroblast subdataframe to the total dataframe. 
+all(colnames(fibroblast_counts) == colnames(antxr1_celltype_comp)) # TRUE.
+antxr1_celltype_comp <- rbind(antxr1_celltype_comp, fibroblast_counts)
+
+# Get the endothelial cell counts and aggregate. 
+endothelial_counts <- (antxr1_celltype_comp %>% 
+                        dplyr::filter(cell_type %in% grep("EC", antxr1_celltype_comp$cell_type, value = TRUE)) %>%
+                        group_by(timepoint, treatment) %>%
+                        summarise(across(antxr1_counts, sum)) %>%
+                        as.data.frame())
+
+# Merge endothelial counts with total counts and add name.
+endothelial_counts <- merge(endothelial_counts, total_cells, by = c("treatment", "timepoint"))
+endothelial_counts <- cbind(cell_type = "Endothelial cells (Total)", endothelial_counts)
+
+# Calculate the proportion of ANTXR1-expressing cells in proportion to total cells per cell type. 
+endothelial_counts$Antxr1_prop = plyr::round_any((endothelial_counts$antxr1_counts / endothelial_counts$total_counts), 
+                                                   accuracy = 0.001, 
+                                                   f = ceiling)
+
+# Rowbind the endothelial cells subdataframe to the total dataframe. 
+all(colnames(endothelial_counts) == colnames(antxr1_celltype_comp)) # TRUE.
+antxr1_celltype_comp <- rbind(antxr1_celltype_comp, endothelial_counts)
+
+# Get average expression of Antxr1 across cell types. 
+exprs_antxr1_celltypes <- (n_cells %>% 
+                             group_by(cell_type, timepoint, treatment) %>%
+                             summarise(across(Antxr1, mean)) %>%
+                             dplyr::filter(cell_type %in% cell_types_interest) %>%
+                             as.data.frame())
+
+# Get the aggregated fibroblasts and calculate average Antxr1 expression.  
+exprs_fibroblast_counts <- (exprs_antxr1_celltypes %>% 
+                              dplyr::filter(cell_type %in% grep("fibroblast", exprs_antxr1_celltypes$cell_type, value = TRUE)) %>%
+                              group_by(timepoint, treatment) %>%
+                              summarise(across(Antxr1, mean)) %>%
+                              as.data.frame())
+
+# Add fibroblast description to average expression.
+exprs_fibroblast_counts <- cbind(cell_type = "Fibroblasts (Total)", exprs_fibroblast_counts)
+
+# Rowbind the fibroblast expression subdataframe to the total expression dataframe.
+exprs_antxr1_celltypes <- rbind(exprs_antxr1_celltypes, exprs_fibroblast_counts)
+
+# Get the aggregated endothelial cells and calculate average Antxr1 expression.  
+exprs_endothelial_counts <- (exprs_antxr1_celltypes %>% 
+                              dplyr::filter(cell_type %in% grep("EC", exprs_antxr1_celltypes$cell_type, value = TRUE)) %>%
+                              group_by(timepoint, treatment) %>%
+                              summarise(across(Antxr1, mean)) %>%
+                              as.data.frame())
+
+# Add endothelial description to average expression.
+exprs_endothelial_counts <- cbind(cell_type = "Endothelial cells (Total)", exprs_endothelial_counts)
+
+# Rowbind the endothelial cell expression subdataframe to the total expression dataframe.
+exprs_antxr1_celltypes <- rbind(exprs_antxr1_celltypes, exprs_endothelial_counts)
+
+# Merge average expression dataframe with the count dataframe. 
+antxr1_count_exprs_df <- merge(antxr1_celltype_comp, exprs_antxr1_celltypes,
+                               by = c("cell_type", "treatment", "timepoint"))
+
+# Create a new plotting category.
+antxr1_count_exprs_df$comparison_var <- paste0(antxr1_count_exprs_df$cell_type, 
+                                               ifelse(antxr1_count_exprs_df$timepoint == "Sham", "", "_Bleomycin"), 
+                                               "_", 
+                                               antxr1_count_exprs_df$timepoint)
+
+# Relevel new category.
+antxr1_count_exprs_df$comparison_var = factor(antxr1_count_exprs_df$comparison_var, 
+                                              levels = c("AT2_Sham", "AT2_Bleomycin_Day 14", "AT2_Bleomycin_Day 35",
+                                                         "AT1_Sham", "AT1_Bleomycin_Day 14", "AT1_Bleomycin_Day 35",
+                                                         "Fibroblasts (Total)_Sham", "Fibroblasts (Total)_Bleomycin_Day 14", 
+                                                         "Fibroblasts (Total)_Bleomycin_Day 35",
+                                                         "Alveolar fibroblasts_Sham", "Alveolar fibroblasts_Bleomycin_Day 14",
+                                                         "Alveolar fibroblasts_Bleomycin_Day 35",
+                                                         "Peribronchial fibroblasts_Sham", "Peribronchial fibroblasts_Bleomycin_Day 14",
+                                                         "Peribronchial fibroblasts_Bleomycin_Day 35",
+                                                         "Adventitial fibroblasts_Sham", "Adventitial fibroblasts_Bleomycin_Day 14",
+                                                         "Adventitial fibroblasts_Bleomycin_Day 35",
+                                                         "Myofibroblasts_Sham", "Myofibroblasts_Bleomycin_Day 14", 
+                                                         "Myofibroblasts_Bleomycin_Day 35",
+                                                         "Endothelial cells (Total)_Sham", "Endothelial cells (Total)_Bleomycin_Day 14",
+                                                         "Endothelial cells (Total)_Bleomycin_Day 35",
+                                                         "EC arterial_Sham", "EC arterial_Bleomycin_Day 14",
+                                                         "EC arterial_Bleomycin_Day 35",
+                                                         "EC venous pulmonary_Sham", "EC venous pulmonary_Bleomycin_Day 14",
+                                                         "EC venous pulmonary_Bleomycin_Day 35",
+                                                         "EC venous systemic_Sham", "EC venous systemic_Bleomycin_Day 14",
+                                                         "EC venous systemic_Bleomycin_Day 35",
+                                                         "EC general capillary_Sham", "EC general capillary_Bleomycin_Day 14",
+                                                         "EC general capillary_Bleomycin_Day 35",
+                                                         "EC aerocyte capillary_Sham", "EC aerocyte capillary_Bleomycin_Day 14",
+                                                         "EC aerocyte capillary_Bleomycin_Day 35"))
+
+# Get range of ANTXR1 expression to determine midpoint for colour scaling.
+range(antxr1_count_exprs_df$Antxr1) # 0.004 to 0.744 - Use 0.35 as midpoint. 
+
+# Plot distribution of counts across cell type.
+ggplot(antxr1_count_exprs_df, aes(x = comparison_var,
+                                 y = Antxr1_prop,
+                                 fill = Antxr1)) +
+  geom_bar(position = "stack", 
+           stat = "identity") +
+  geom_text(aes(label = Antxr1_prop),
+            size = 3,
+            vjust = -1.2,
+            inherit.aes = TRUE) +
+  scale_fill_gradient2(midpoint = 0.35, 
+                       low = "#FDE725FF",
+                       mid = "#238A8DFF",
+                       high = "#440154FF") +
+  ylim(0, 0.2) +
+  labs(x = "Comparisons", 
+  y = "ANTXR1-expressing cell type / Total cell per condition", 
+  fill = "ANTXR1 average expression
+  per cell type per condition") +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 10,
+                                   angle = 90,
+                                   vjust = 0.5,
+                                   hjust = 1),
+        axis.text.y = element_text(size = 10))
+```
+
+```{r ANTXR1+ exprs per total cells per condition - aggregated, fig.height=8, fig.width=15, out.width="100%"}
+# Subset AT1, AT2, fibroblasts and ECs only. 
+antxr1_celltype_comp_subset <- antxr1_count_exprs_df %>% dplyr::filter(cell_type %in% c("AT1", "AT2", "Myofibroblasts", "Fibroblasts (Total)", "Endothelial cells (Total)"))
+
+# Get range of ANTXR1 expression to determine midpoint for colour scaling.
+range(antxr1_celltype_comp_subset$Antxr1) # 0.004 to 0.665 - Use 0.35 as midpoint. 
+
+# Plot bar graph. 
+ggplot(antxr1_celltype_comp_subset, 
+       aes(x = comparison_var,
+           y = Antxr1_prop,
+           fill = Antxr1)) +
+  geom_bar(position = "stack", 
+           stat = "identity") +
+  geom_point() +
+  geom_text(aes(label = Antxr1_prop),
+            vjust = -1) +
+  scale_fill_gradient2(midpoint = 0.35, 
+                       low = "#FDE725FF",
+                       mid = "#238A8DFF",
+                       high = "#440154FF") +
+  ylim(0, 0.2) +
+  labs(x = "Comparisons", 
+  y = "ANTXR1-expressing cell type / Total cell per condition", 
+  fill = "ANTXR1 average expression 
+  per cell type per condition") +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 10,
+                                   angle = 90,
+                                   vjust = 0.5,
+                                   hjust = 1)) 
+```
+
+
+## Step 2.6: Proportion of ANTXR1-expressing cell types / Total cell per cell type per condition
+
+```{r ANTXR1+ exprs per total cells per cell type per condition, fig.height=8, fig.width=15, out.width="100%"}
+# Get the variables of interest.
+n_cells <- (FetchData(seurat_cluster, 
+                      vars = c("predicted.ann_finest_level", "treatment", "timepoint", "Antxr1")) %>%
+              rename("predicted.ann_finest_level" = "cell_type")) 
+
+# Get total cells per timepoint.
+total_per_celltype_per_condition <- (n_cells %>% 
+                                       dplyr::count(cell_type, timepoint, treatment) %>%
+                                       rename("n" = "total_counts"))
+
+# Count the ANTXR1 expressing cells per timepoint.
+n_antxr1_celltypes <- (n_cells %>%
+                         dplyr::filter(Antxr1 > 0) %>%
+                         dplyr::count(cell_type, timepoint, treatment) %>%
+                         rename("n" = "antxr1_counts"))
+
+# Merge total cells to ANTXR1-expressing cells per timepoint.
+antxr1_celltype_comp <- merge(n_antxr1_celltypes, total_per_celltype_per_condition, 
+                              by = c("cell_type", "timepoint", "treatment"))
+
+# Calculate the proportion of ANTXR1-expressing cells in proportion to total cells per cell type per condition. 
+antxr1_celltype_comp$Antxr1_prop = plyr::round_any((antxr1_celltype_comp$antxr1_counts / antxr1_celltype_comp$total_counts), 
+                                                   accuracy = 0.001, 
+                                                   f = ceiling)
+antxr1_celltype_comp <- antxr1_celltype_comp %>% arrange(cell_type, timepoint, desc(treatment))
+kable(antxr1_celltype_comp)
+
+# Subset cell type of interest.
+antxr1_celltype_comp <- antxr1_celltype_comp %>% dplyr::filter(cell_type %in% cell_types_interest)
+
+# Get fibroblast counts and aggregate.
+fibroblast_counts <- (antxr1_celltype_comp %>% 
+                        dplyr::filter(cell_type %in% grep("fibroblast", 
+                                                          antxr1_celltype_comp$cell_type, 
+                                                          value = TRUE)) %>%
+                        group_by(timepoint, treatment) %>%
+                        summarise(across(c(antxr1_counts, total_counts), sum)) %>% 
+                        as.data.frame())
+
+# Add aggregated name.
+fibroblast_counts <- cbind(cell_type = "Fibroblasts (Total)", fibroblast_counts)
+
+# Calculate the proportion of ANTXR1-expressing cells in proportion to total cells per cell type. 
+fibroblast_counts$Antxr1_prop = plyr::round_any((fibroblast_counts$antxr1_counts / fibroblast_counts$total_counts), 
+                                                   accuracy = 0.001, 
+                                                   f = ceiling)
+
+# Rowbind the fibroblast subdataframe to the total dataframe. 
+all(colnames(fibroblast_counts) == colnames(antxr1_celltype_comp)) # TRUE.
+antxr1_celltype_comp <- rbind(antxr1_celltype_comp, fibroblast_counts)
+
+# Get the endothelial cell counts and aggregate. 
+endothelial_counts <- (antxr1_celltype_comp %>% 
+                        dplyr::filter(cell_type %in% grep("EC", 
+                                                          antxr1_celltype_comp$cell_type, 
+                                                          value = TRUE)) %>%
+                        group_by(timepoint, treatment) %>%
+                        summarise(across(c(antxr1_counts, total_counts), sum)) %>%
+                        as.data.frame())
+
+# Add aggregated name.
+endothelial_counts <- cbind(cell_type = "Endothelial cells (Total)", endothelial_counts)
+
+# Calculate the proportion of ANTXR1-expressing cells in proportion to total cells per cell type. 
+endothelial_counts$Antxr1_prop = plyr::round_any((endothelial_counts$antxr1_counts / endothelial_counts$total_counts), 
+                                                   accuracy = 0.001, 
+                                                   f = ceiling)
+
+# Rowbind the endothelial cells subdataframe to the total dataframe. 
+all(colnames(endothelial_counts) == colnames(antxr1_celltype_comp)) # TRUE.
+antxr1_celltype_comp <- rbind(antxr1_celltype_comp, endothelial_counts)
+
+# Get average expression of Antxr1 across cell types. 
+exprs_antxr1_celltypes <- (n_cells %>% 
+                             group_by(cell_type, timepoint, treatment) %>%
+                             summarise(across(Antxr1, mean)) %>%
+                             dplyr::filter(cell_type %in% cell_types_interest) %>%
+                             as.data.frame())
+
+# Get the aggregated fibroblasts and calculate average Antxr1 expression.  
+exprs_fibroblast_counts <- (exprs_antxr1_celltypes %>% 
+                              dplyr::filter(cell_type %in% grep("fibroblast", 
+                                                                exprs_antxr1_celltypes$cell_type, 
+                                                                value = TRUE)) %>%
+                              group_by(timepoint, treatment) %>%
+                              summarise(across(Antxr1, mean)) %>%
+                              as.data.frame())
+
+# Add fibroblast description to average expression.
+exprs_fibroblast_counts <- cbind(cell_type = "Fibroblasts (Total)", exprs_fibroblast_counts)
+
+# Rowbind the fibroblast expression subdataframe to the total expression dataframe.
+all(colnames(exprs_antxr1_celltypes) == colnames(exprs_fibroblast_counts)) # TRUE.
+exprs_antxr1_celltypes <- rbind(exprs_antxr1_celltypes, exprs_fibroblast_counts)
+
+# Get the aggregated endothelial cells and calculate average Antxr1 expression.  
+exprs_endothelial_counts <- (exprs_antxr1_celltypes %>% 
+                              dplyr::filter(cell_type %in% grep("EC", 
+                                                                exprs_antxr1_celltypes$cell_type, 
+                                                                value = TRUE)) %>%
+                              group_by(timepoint, treatment) %>%
+                              summarise(across(Antxr1, mean)) %>%
+                              as.data.frame())
+
+# Add endothelial description to average expression.
+exprs_endothelial_counts <- cbind(cell_type = "Endothelial cells (Total)", exprs_endothelial_counts)
+
+# Rowbind the endothelial cell expression subdataframe to the total expression dataframe.
+all(colnames(exprs_antxr1_celltypes) == colnames(exprs_endothelial_counts)) # TRUE.
+exprs_antxr1_celltypes <- rbind(exprs_antxr1_celltypes, exprs_endothelial_counts)
+
+# Merge average expression dataframe with the count dataframe. 
+antxr1_count_exprs_df <- merge(antxr1_celltype_comp, exprs_antxr1_celltypes,
+                               by = c("cell_type", "treatment", "timepoint"))
+
+# Create a new plotting category.
+antxr1_count_exprs_df$comparison_var <- paste0(antxr1_count_exprs_df$cell_type, 
+                                               ifelse(antxr1_count_exprs_df$timepoint == "Sham", 
+                                                      "", 
+                                                      "_Bleomycin"), 
+                                               "_", 
+                                               antxr1_count_exprs_df$timepoint)
+
+# Relevel new category.
+antxr1_count_exprs_df$comparison_var = factor(antxr1_count_exprs_df$comparison_var, 
+                                              levels = c("AT2_Sham", "AT2_Bleomycin_Day 14", "AT2_Bleomycin_Day 35",
+                                                         "AT1_Sham", "AT1_Bleomycin_Day 14", "AT1_Bleomycin_Day 35",
+                                                         "Fibroblasts (Total)_Sham", "Fibroblasts (Total)_Bleomycin_Day 14", 
+                                                         "Fibroblasts (Total)_Bleomycin_Day 35",
+                                                         "Alveolar fibroblasts_Sham", "Alveolar fibroblasts_Bleomycin_Day 14",
+                                                         "Alveolar fibroblasts_Bleomycin_Day 35",
+                                                         "Peribronchial fibroblasts_Sham", "Peribronchial fibroblasts_Bleomycin_Day 14",
+                                                         "Peribronchial fibroblasts_Bleomycin_Day 35",
+                                                         "Adventitial fibroblasts_Sham", "Adventitial fibroblasts_Bleomycin_Day 14",
+                                                         "Adventitial fibroblasts_Bleomycin_Day 35",
+                                                         "Myofibroblasts_Sham", "Myofibroblasts_Bleomycin_Day 14", 
+                                                         "Myofibroblasts_Bleomycin_Day 35",
+                                                         "Endothelial cells (Total)_Sham", "Endothelial cells (Total)_Bleomycin_Day 14",
+                                                         "Endothelial cells (Total)_Bleomycin_Day 35",
+                                                         "EC arterial_Sham", "EC arterial_Bleomycin_Day 14",
+                                                         "EC arterial_Bleomycin_Day 35",
+                                                         "EC venous pulmonary_Sham", "EC venous pulmonary_Bleomycin_Day 14",
+                                                         "EC venous pulmonary_Bleomycin_Day 35",
+                                                         "EC venous systemic_Sham", "EC venous systemic_Bleomycin_Day 14",
+                                                         "EC venous systemic_Bleomycin_Day 35",
+                                                         "EC general capillary_Sham", "EC general capillary_Bleomycin_Day 14",
+                                                         "EC general capillary_Bleomycin_Day 35",
+                                                         "EC aerocyte capillary_Sham", "EC aerocyte capillary_Bleomycin_Day 14",
+                                                         "EC aerocyte capillary_Bleomycin_Day 35"))
+
+# Get range of ANTXR1 expression to determine midpoint for colour scaling.
+range(antxr1_count_exprs_df$Antxr1) # 0.004 to 0.744 - Use 0.35 as midpoint. 
+
+# Plot distribution of counts across cell type.
+ggplot(antxr1_count_exprs_df, aes(x = comparison_var,
+                                 y = Antxr1_prop,
+                                 fill = Antxr1)) +
+  geom_bar(position = "stack", 
+           stat = "identity") +
+  geom_text(aes(label = Antxr1_prop),
+            size = 3,
+            vjust = -1.2,
+            inherit.aes = TRUE) +
+  scale_fill_gradient2(midpoint = 0.35, 
+                       low = "#FDE725FF",
+                       mid = "#238A8DFF",
+                       high = "#440154FF") +
+  ylim(0, 0.6) +
+  labs(x = "Comparisons", 
+       y = "ANTXR1-expressing cell type / Total cells per cell type per condition", 
+       fill = "Average ANTXR1 expression per 
+       cell type per condition") +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 10,
+                                   angle = 90,
+                                   vjust = 0.5,
+                                   hjust = 1),
+        axis.text.y = element_text(size = 10))
+
+# Remove unneeded objects.
+rm(n_cells, total_per_celltype_per_condition, n_antxr1_celltypes, antxr1_celltype_comp,
+   fibroblast_counts, endothelial_counts, exprs_antxr1_celltypes, exprs_fibroblast_counts,
+   exprs_endothelial_counts)
+```
+
+```{r ANTXR1+ exprs per total cells per cell type per condition - aggregated, fig.height=9, fig.width=15, out.width="100%"}
+# Subset AT1, AT2, fibroblasts and endothelial cells only. 
+antxr1_celltype_comp_subset <- antxr1_count_exprs_df %>% dplyr::filter(cell_type %in% c("AT1", "AT2", "Myofibroblasts", "Fibroblasts (Total)", "Endothelial cells (Total)"))
+
+# Plot bar graph. 
+ggplot(antxr1_celltype_comp_subset, 
+       aes(x = comparison_var,
+           y = Antxr1_prop,
+           fill = Antxr1)) +
+  geom_bar(position = "stack", 
+           stat = "identity") +
+  geom_point() +
+  geom_text(aes(label = Antxr1_prop),
+            vjust = -1) +
+  scale_fill_gradient2(midpoint = 0.35, 
+                       low = "#FDE725FF",
+                       mid = "#238A8DFF",
+                       high = "#440154FF") +
+  labs(x = "Comparisons", y = "ANTXR1-expressing cell type / Total cells per cell type per condition", fill = "Average ANTXR1 expression 
+  per cell type per condition") +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 10,
+                                   angle = 90,
+                                   vjust = 0.5,
+                                   hjust = 1)) 
+
+# Remove unneeded objects.
+rm(antxr1_count_exprs_df)
+```
+
+
+## Step 2.7: Relative expression of ANTXR1 across cell types and variables of interest
+
+```{r get expression data for genes of interest, echo=FALSE}
+# Get ANTXR1 and ANTXR2 expression information and transpose.
+antxr_exprs = (GetAssayData(seurat_cluster)[c("Antxr1", "Antxr2"),] %>% 
+                 t() %>% 
+                 as.data.frame()) 
+
+# Get cell metadata.
+metadata = seurat_cluster@meta.data
+
+# Merge assay data and metadata.
+antxr_exprs <- (merge(antxr_exprs, metadata, by = "row.names") %>% 
+                  column_to_rownames(var = "Row.names") %>% 
+                  subset(select = -cell_type))
+antxr_exprs <- antxr_exprs %>% rename("predicted.ann_finest_level" = "cell_type")
+dim(antxr_exprs) # 80,505 cells.
+
+# Subset cell types of interest.
+antxr_exprs <- antxr_exprs %>% subset(cell_type %in% cell_types_interest)
+
+# Rearrange the timepoint column.
+antxr_exprs$timepoint <- factor(x = antxr_exprs$timepoint,
+                                levels = c("Sham",
+                                           "Day 14",
+                                           "Day 35"))
+
+# Rearrange the cell_type column.
+antxr_exprs$cell_type <- factor(x = antxr_exprs$cell_type,
+                                levels = c("AT2",
+                                           "AT1",
+                                           "Alveolar fibroblasts",
+                                           "Peribronchial fibroblasts",
+                                           "Adventitial fibroblasts",
+                                           "Myofibroblasts",
+                                           "EC arterial",
+                                           "EC venous pulmonary",
+                                           "EC venous systemic",
+                                           "EC general capillary",
+                                           "EC aerocyte capillary"))
+```
+
+```{r ANTXR1 expression violin plot - all cell types, fig.height=8, fig.width=15, out.width="100%"}
+# Plot the ANTXR1 expression for the cell types of interest with comparison variables.
+antxr_exprs %>% 
+  group_by(cell_type, timepoint) %>%
+  mutate(mean = mean(Antxr1),
+         sd = sd(Antxr1)) %>%
+  ggplot(aes(x = cell_type, y = Antxr1, fill = timepoint)) +
+  geom_violin(position = position_dodge(width = 1)) +
+  geom_point(position = position_jitterdodge(dodge.width = 1), size = 0.5) +
+  xlab("Cell type") +
+  ylab("ANTXR1 expression") +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 10,
+                                   angle = 90,
+                                   vjust = 0.5,
+                                   hjust = 1),
+        legend.title = element_blank(),
+        legend.position = "bottom") +
+  stat_summary(data = ~subset(.x), 
+               fun = mean, 
+               geom = "point", 
+               colour = "#ac3f0e",
+               shape = 13, 
+               size = 5, 
+               position = position_dodge(width = 1)) +
+  geom_errorbar(data = ~subset(.x),
+                aes(ymin = mean - sd,
+                    ymax = mean + sd),
+                colour = "#f56f00",
+                position = position_dodge(width = 1)) 
+```
+
+
+## Step 2.8: Time-series ANTXR1 in young mice (Selected cell types)
+
+```{r time series ANTXR1 plot, warning=FALSE, fig.height=12, fig.width=15, out.width="100%"}
+# Plot the ANTXR1 expression in a time series manner for selected cell types of interest.
+antxr_exprs %>%
+  group_by(cell_type, timepoint) %>%
+  mutate(mean = mean(Antxr1),
+         sd = sd(Antxr1)) %>%
+  subset(cell_type %in% cell_types_interest) %>%
+  ggplot(aes(x = timepoint, y = Antxr1, fill = timepoint)) +
+  geom_violin(position = position_dodge(width = 1), show.legend = FALSE) +
+  geom_point(position = position_jitterdodge(dodge.width = 1), size = 0.5, show.legend = FALSE) +
+  xlab("Time point") +
+  ylab("ANTXR1 expression by cell types") +
+  ylim(0, 3) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 8)) +
+  stat_summary(data = ~subset(.x),
+               fun = mean,
+               geom = "point",
+               colour = "#ac3f0e",
+               shape = 13,
+               size = 5,
+               position = position_dodge(width = 1),
+               show.legend = FALSE) +
+  geom_errorbar(data = ~subset(.x),
+                aes(ymin = mean - sd,
+                    ymax = mean + sd),
+                colour = "#f56f00",
+                position = position_dodge(width = 1),
+                show.legend = FALSE) +
+  facet_grid(cell_type ~ ., space = "free_x", scales = "free_y", switch = "y") 
+```
+
+
+## Step 2.9: Relative expression of ANTXR1 (Aggregated)
+
+```{r ANTXR1 expression violin plot - aggregated, fig.height=8, fig.width=15, out.width="100%"}
+# Find out the available fibroblasts in the cell metadata.
+grep("fibroblast", antxr_exprs$cell_type, value = TRUE) %>% unique()
+
+# Aggregate all fibroblasts into a single grouping. 
+antxr_exprs$cell_type <- gsub("Alveolar fibroblasts", "Fibroblasts (Total)",
+                              gsub("Adventitial fibroblasts", "Fibroblasts (Total)",
+                                   gsub("Peribronchial fibroblasts", "Fibroblasts (Total)",
+                                        gsub("Myofibroblasts", "Fibroblasts (Total)", antxr_exprs$cell_type))))
+
+# Find out the available endothelial cells in the cell metadata.
+grep("EC", antxr_exprs$cell_type, value = TRUE) %>% unique()
+
+# Aggregate all endothelial cells into a single grouping. 
+antxr_exprs$cell_type <- gsub("EC arterial", "Endothelial cells (Total)",
+                              gsub("EC venous pulmonary", "Endothelial cells (Total)",
+                                   gsub("EC venous systemic", "Endothelial cells (Total)",
+                                        gsub("EC general capillary", "Endothelial cells (Total)", 
+                                             gsub("EC aerocyte capillary", "Endothelial cells (Total)", antxr_exprs$cell_type)))))
+
+# Relevel cell types.
+antxr_exprs$cell_type <- factor(x = antxr_exprs$cell_type,
+                                levels = c("AT2", "AT1", "Fibroblasts (Total)", "Endothelial cells (Total)"))
+
+# Plot the ANTXR1 expression for the cell types of interest with comparison variables.
+antxr_exprs %>% 
+  group_by(cell_type, timepoint) %>%
+  mutate(mean = mean(Antxr1),
+         sd = sd(Antxr1)) %>%
+  ggplot(aes(x = cell_type, y = Antxr1, fill = timepoint)) +
+  geom_violin(position = position_dodge(width = 1)) +
+  geom_point(position = position_jitterdodge(dodge.width = 1), size = 0.5) +
+  xlab("Cell type") +
+  ylab("ANTXR1 expression") +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 10),
+        legend.title = element_blank(),
+        legend.position = "bottom") +
+  stat_summary(data = ~subset(.x), 
+               fun = mean, 
+               geom = "point", 
+               colour = "#ac3f0e",
+               shape = 13, 
+               size = 5, 
+               position = position_dodge(width = 1)) +
+  geom_errorbar(data = ~subset(.x),
+                aes(ymin = mean - sd,
+                    ymax = mean + sd),
+                colour = "#f56f00",
+                position = position_dodge(width = 1)) 
+```
+
+
+## Step 2.10: Time-series ANTXR1 in young mice (Aggregated fibroblasts)
+
+```{r time series ANTXR1 plot - aggregated fibroblasts, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+# Plot the ANTXR1 expression in a time series manner for cells types with aggregated fibroblasts.
+antxr_exprs %>%
+  group_by(cell_type, timepoint) %>%
+  mutate(mean = mean(Antxr1),
+         sd = sd(Antxr1)) %>%
+  ggplot(aes(x = timepoint, y = Antxr1, fill = timepoint)) +
+  geom_violin(position = position_dodge(width = 1), show.legend = FALSE) +
+  geom_point(position = position_jitterdodge(dodge.width = 1), size = 0.5, show.legend = FALSE) +
+  xlab("Time point") +
+  ylab("ANTXR1 expression by cell types") +
+  ylim(0, 3) +
+  theme_linedraw() +
+  theme(axis.text.x = element_text(size = 8)) +
+  stat_summary(data = ~subset(.x),
+               fun = mean,
+               geom = "point",
+               colour = "#ac3f0e",
+               shape = 13,
+               size = 5,
+               position = position_dodge(width = 1),
+               show.legend = FALSE) +
+  geom_errorbar(data = ~subset(.x),
+                aes(ymin = mean - sd,
+                    ymax = mean + sd),
+                colour = "#f56f00",
+                position = position_dodge(width = 1),
+                show.legend = FALSE) +
+  facet_grid(cell_type ~ ., space = "free_x", scales = "free_y", switch = "y") 
+```
+
+
+# Step 3: Differential expression analysis
+
+## Step 3.1: Prepare data with annotation
+
+```{r prepare data with annotation}
+# Connect to AnnotationHub.
+ah <- AnnotationHub()
+
+# Access the Ensembl database for organism.
+ahDb <- query(ah, 
+              pattern = c("Mus musculus", "EnsDb"), 
+              ignore.case = TRUE)
+
+# Acquire the latest annotation files.
+id <- ahDb %>%
+        mcols() %>%
+        rownames() %>%
+        tail(n = 1)
+
+# Download the appropriate Ensembldb database.
+edb <- ah[[id]]
+
+# Extract gene-level information from database.
+annotations <- genes(edb, 
+                     return.type = "data.frame")
+
+# Select annotations of interest.
+annotations <- annotations %>%
+        dplyr::select(gene_id, gene_name, seq_name, gene_biotype, description)
+
+# Remove unneeded objects.
+rm(ah, ahDb, edb, id)
+```
+
+
+## Step 3.2: AT2 cells
+
+### Step 3.2.1: AT2_Sham vs AT2_Bleo_Day14
+
+```{r AT2_Sham vs AT2_Bleo_Day14, warning=FALSE, fig.height=12, fig.width=15, out.width="100%"}
+# Find the genes that are differentially expressed between AT2 Sham and AT2 Bleo Day14.
+Idents(seurat_cluster) <- "comparison_var"
+AT2_sham_vs_AT2_bleo_day14 <- FindMarkers(seurat_cluster, 
+                                          ident.1 = "AT2_Sham",
+                                          ident.2 = "AT2_Day 14",
+                                          logfc.threshold = 0.1,
+                                          min.pct = 0.01,
+                                          test.use = "wilcox",
+                                          verbose = FALSE)
+
+# Edit the output table and add annotations.
+AT2_sham_vs_AT2_bleo_day14 <- AT2_sham_vs_AT2_bleo_day14 %>% rownames_to_column("geneID") 
+AT2_sham_vs_AT2_bleo_day14 <- dplyr::left_join(AT2_sham_vs_AT2_bleo_day14, 
+                                               annotations, 
+                                               by = c("geneID" = "gene_name"))
+
+# Get the top 15 and bottom 15 values from the DEG output.
+deg_genes <- (AT2_sham_vs_AT2_bleo_day14 %>% 
+                dplyr::filter(p_val < 1e-05) %>% 
+                arrange(desc(avg_log2FC)))
+deg_genes = rbind(utils::head(deg_genes, n = 15), utils::tail(deg_genes, n = 15))
+
+# Visualize via volcano plot.
+EnhancedVolcano(AT2_sham_vs_AT2_bleo_day14, 
+                AT2_sham_vs_AT2_bleo_day14$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val",
+                selectLab = c(deg_genes$geneID, "Antxr1", "Antxr2"),
+                title = "AT2 Sham vs. AT2 Bleomycin Day 14",
+                FCcutoff = 1.0,
+                pointSize = 3.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+
+# Print table.
+AT2_sham_vs_AT2_bleo_day14 %>% reactable(searchable = TRUE,
+                                         striped = TRUE,
+                                         highlight = TRUE,
+                                         bordered = TRUE,
+                                         showSortable = TRUE,
+                                         theme = reactableTheme(borderColor = "#dfe2e5",
+                                                                stripedColor = "#f6f8fa",
+                                                                highlightColor = "#f0f5f9",
+                                                                style = list(fontFamily = "-apple-system,
+                                                                BlinkMacSystemFont, 
+                                                                Segoe UI, 
+                                                                Helvetica, 
+                                                                Arial, 
+                                                                sans-serif"),
+                                                                searchInputStyle = list(width = "100%")))
+
+# Remove unneeded objects.
+rm(AT2_sham_vs_AT2_bleo_day14, deg_genes)
+```
+
+
+### Step 3.2.2: AT2_Sham vs AT2_Bleo_Day35
+
+```{r AT2_Sham vs AT2_Bleo_Day35, warning=FALSE, fig.height=12, fig.width=15, out.width="100%"}
+# Find the genes that are differentially expressed between AT2 Sham and AT2 Bleo Day35.
+Idents(seurat_cluster) <- "comparison_var"
+AT2_sham_vs_AT2_bleo_day35 <- FindMarkers(seurat_cluster, 
+                                          ident.1 = "AT2_Sham",
+                                          ident.2 = "AT2_Day 35",
+                                          logfc.threshold = 0.1,
+                                          min.pct = 0.01,
+                                          test.use = "wilcox",
+                                          verbose = FALSE)
+
+# Edit the output table and add annotations.
+AT2_sham_vs_AT2_bleo_day35 <- AT2_sham_vs_AT2_bleo_day35 %>% rownames_to_column("geneID") 
+AT2_sham_vs_AT2_bleo_day35 <- dplyr::left_join(AT2_sham_vs_AT2_bleo_day35, 
+                                               annotations, 
+                                               by = c("geneID" = "gene_name"))
+
+# Get the top 15 and bottom 15 values from the DEG output.
+deg_genes <- (AT2_sham_vs_AT2_bleo_day35 %>% 
+                dplyr::filter(p_val < 1e-05) %>% 
+                arrange(desc(avg_log2FC)))
+deg_genes = rbind(utils::head(deg_genes, n = 15), utils::tail(deg_genes, n = 15))
+
+# Visualize via volcano plot.
+EnhancedVolcano(AT2_sham_vs_AT2_bleo_day35, 
+                AT2_sham_vs_AT2_bleo_day35$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val",
+                selectLab = c(deg_genes$geneID, "Antxr1", "Antxr2"),
+                title = "AT2 Sham vs. AT2 Bleomycin Day 35",
+                FCcutoff = 1.0,
+                pointSize = 3.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+
+# Print table.
+AT2_sham_vs_AT2_bleo_day35 %>% reactable(searchable = TRUE,
+                                         striped = TRUE,
+                                         highlight = TRUE,
+                                         bordered = TRUE,
+                                         showSortable = TRUE,
+                                         theme = reactableTheme(borderColor = "#dfe2e5",
+                                                                stripedColor = "#f6f8fa",
+                                                                highlightColor = "#f0f5f9",
+                                                                style = list(fontFamily = "-apple-system,
+                                                                BlinkMacSystemFont, 
+                                                                Segoe UI, 
+                                                                Helvetica, 
+                                                                Arial, 
+                                                                sans-serif"),
+                                                                searchInputStyle = list(width = "100%")))
+
+# Remove unneeded objects.
+rm(AT2_sham_vs_AT2_bleo_day35, deg_genes)
+```
+
+
+### Step 3.2.3: AT2_Bleo_Day14 vs AT2_Bleo_Day35
+
+```{r AT2_Bleo_Day14 vs AT2_Bleo_Day35, warning=FALSE, fig.height=12, fig.width=15, out.width="100%"}
+# Find the genes that are differentially expressed between AT2 Bleo Day14 and AT2 Bleo Day35.
+Idents(seurat_cluster) <- "comparison_var"
+AT2_bleo_day14_vs_AT2_bleo_day35 <- FindMarkers(seurat_cluster, 
+                                                ident.1 = "AT2_Day 14",
+                                                ident.2 = "AT2_Day 35",
+                                                logfc.threshold = 0.1,
+                                                min.pct = 0.01,
+                                                test.use = "wilcox",
+                                                verbose = FALSE)
+
+# Edit the output table and add annotations.
+AT2_bleo_day14_vs_AT2_bleo_day35 <- AT2_bleo_day14_vs_AT2_bleo_day35 %>% rownames_to_column("geneID") 
+AT2_bleo_day14_vs_AT2_bleo_day35 <- dplyr::left_join(AT2_bleo_day14_vs_AT2_bleo_day35, 
+                                                     annotations, 
+                                                     by = c("geneID" = "gene_name"))
+
+# Get the top 15 and bottom 15 values from the DEG output.
+deg_genes <- (AT2_bleo_day14_vs_AT2_bleo_day35 %>% 
+                dplyr::filter(p_val < 1e-05) %>% 
+                arrange(desc(avg_log2FC)))
+deg_genes = rbind(utils::head(deg_genes, n = 15), utils::tail(deg_genes, n = 15))
+
+# Visualize via volcano plot.
+EnhancedVolcano(AT2_bleo_day14_vs_AT2_bleo_day35, 
+                AT2_bleo_day14_vs_AT2_bleo_day35$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val",
+                selectLab = c(deg_genes$geneID, "Antxr1", "Antxr2"),
+                title = "AT2 Bleomycin Day 14 vs. AT2 Bleomycin Day 35",
+                FCcutoff = 1.0,
+                pointSize = 3.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+
+# Print table.
+AT2_bleo_day14_vs_AT2_bleo_day35 %>% reactable(searchable = TRUE,
+                                               striped = TRUE,
+                                               highlight = TRUE,
+                                               bordered = TRUE,
+                                               showSortable = TRUE,
+                                               theme = reactableTheme(borderColor = "#dfe2e5",
+                                                                      stripedColor = "#f6f8fa",
+                                                                      highlightColor = "#f0f5f9",
+                                                                      style = list(
+                                                                      fontFamily = "-apple-system,
+                                                                      BlinkMacSystemFont, 
+                                                                      Segoe UI, 
+                                                                      Helvetica, 
+                                                                      Arial, 
+                                                                      sans-serif"),
+                                                                      searchInputStyle = list(
+                                                                        width = "100%")))
+
+# Remove unneeded objects.
+rm(AT2_bleo_day14_vs_AT2_bleo_day35, deg_genes)
+```
+
+
+## Step 3.3: Alveolar fibroblasts
+
+### Step 3.3.1: AlveolarFibroblasts_Sham vs AlveolarFibroblasts_Bleo_Day14
+
+```{r AF_Sham vs AF_Bleo_Day14, warning=FALSE, fig.height=12, fig.width=15, out.width="100%"}
+# Find the genes that are differentially expressed between Alveolar Fibroblasts Sham and Alveolar Fibroblasts Bleo Day14.
+Idents(seurat_cluster) <- "comparison_var"
+AF_sham_vs_AF_bleo_day14 <- FindMarkers(seurat_cluster, 
+                                        ident.1 = "Alveolar fibroblasts_Sham",
+                                        ident.2 = "Alveolar fibroblasts_Day 14",
+                                        logfc.threshold = 0.1,
+                                        min.pct = 0.01,
+                                        test.use = "wilcox",
+                                        verbose = FALSE)
+
+# Edit the output table and add annotations.
+AF_sham_vs_AF_bleo_day14 <- AF_sham_vs_AF_bleo_day14 %>% rownames_to_column("geneID") 
+AF_sham_vs_AF_bleo_day14 <- dplyr::left_join(AF_sham_vs_AF_bleo_day14, 
+                                             annotations, 
+                                             by = c("geneID" = "gene_name"))
+
+# Get the top 15 and bottom 15 values from the DEG output.
+deg_genes <- (AF_sham_vs_AF_bleo_day14 %>% 
+                dplyr::filter(p_val < 1e-05) %>% 
+                arrange(desc(avg_log2FC)))
+deg_genes = rbind(utils::head(deg_genes, n = 15), utils::tail(deg_genes, n = 15))
+
+# Visualize via volcano plot.
+EnhancedVolcano(AF_sham_vs_AF_bleo_day14, 
+                AF_sham_vs_AF_bleo_day14$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val",
+                selectLab = c(deg_genes$geneID, "Antxr1", "Antxr2"),
+                title = "Alveolar Fibroblast Sham vs. Alveolar Fibroblast Bleomycin Day 14",
+                FCcutoff = 1.0,
+                pointSize = 3.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+
+# Print table.
+AF_sham_vs_AF_bleo_day14 %>% reactable(searchable = TRUE,
+                                       striped = TRUE,
+                                       highlight = TRUE,
+                                       bordered = TRUE,
+                                       showSortable = TRUE,
+                                       theme = reactableTheme(borderColor = "#dfe2e5",
+                                                              stripedColor = "#f6f8fa",
+                                                              highlightColor = "#f0f5f9",
+                                                              style = list(fontFamily = "-apple-system,
+                                                              BlinkMacSystemFont, 
+                                                              Segoe UI, 
+                                                              Helvetica, 
+                                                              Arial, 
+                                                              sans-serif"),
+                                                              searchInputStyle = list(width = "100%")))
+
+# Remove unneeded objects.
+rm(AF_sham_vs_AF_bleo_day14, deg_genes)
+```
+
+
+### Step 3.3.2: AlveolarFibroblasts_Sham vs AlveolarFibroblasts_Bleo_Day35
+
+```{r AF_Sham vs AF_Bleo_Day35, warning=FALSE, fig.height=12, fig.width=15, out.width="100%"}
+# Find the genes that are differentially expressed between Alveolar Fibroblasts Sham and Alveolar Fibroblasts Bleo Day35.
+Idents(seurat_cluster) <- "comparison_var"
+AF_sham_vs_AF_bleo_day35 <- FindMarkers(seurat_cluster, 
+                                        ident.1 = "Alveolar fibroblasts_Sham",
+                                        ident.2 = "Alveolar fibroblasts_Day 35",
+                                        logfc.threshold = 0.1,
+                                        min.pct = 0.01,
+                                        test.use = "wilcox",
+                                        verbose = FALSE)
+
+# Edit the output table and add annotations.
+AF_sham_vs_AF_bleo_day35 <- AF_sham_vs_AF_bleo_day35 %>% rownames_to_column("geneID") 
+AF_sham_vs_AF_bleo_day35 <- dplyr::left_join(AF_sham_vs_AF_bleo_day35, 
+                                             annotations, 
+                                             by = c("geneID" = "gene_name"))
+
+# Get the top 15 and bottom 15 values from the DEG output.
+deg_genes <- (AF_sham_vs_AF_bleo_day35 %>% 
+                dplyr::filter(p_val < 1e-05) %>% 
+                arrange(desc(avg_log2FC)))
+deg_genes = rbind(utils::head(deg_genes, n = 15), utils::tail(deg_genes, n = 15))
+
+# Visualize via volcano plot.
+EnhancedVolcano(AF_sham_vs_AF_bleo_day35, 
+                AF_sham_vs_AF_bleo_day35$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val",
+                selectLab = c(deg_genes$geneID, "Antxr1", "Antxr2"),
+                title = "Alveolar Fibroblast Sham vs. Alveolar Fibroblast Bleomycin Day 35",
+                FCcutoff = 1.0,
+                pointSize = 3.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+
+# Print table.
+AF_sham_vs_AF_bleo_day35 %>% reactable(searchable = TRUE,
+                                       striped = TRUE,
+                                       highlight = TRUE,
+                                       bordered = TRUE,
+                                       showSortable = TRUE,
+                                       theme = reactableTheme(borderColor = "#dfe2e5",
+                                                              stripedColor = "#f6f8fa",
+                                                              highlightColor = "#f0f5f9",
+                                                              style = list(fontFamily = "-apple-system,
+                                                              BlinkMacSystemFont, 
+                                                              Segoe UI, 
+                                                              Helvetica, 
+                                                              Arial, 
+                                                              sans-serif"),
+                                                              searchInputStyle = list(width = "100%")))
+
+# Remove unneeded objects.
+rm(AF_sham_vs_AF_bleo_day35, deg_genes)
+```
+
+
+### Step 3.3.3: AlveolarFibroblasts_Day14 vs AlveolarFibroblasts_Bleo_Day35
+
+```{r AF_Bleo_Day14 vs AF_Bleo_Day35, warning=FALSE, fig.height=12, fig.width=15, out.width="100%"}
+# Find the genes that are differentially expressed between Alveolar Fibroblasts Day14 and Alveolar Fibroblasts Bleo Day35.
+Idents(seurat_cluster) <- "comparison_var"
+AF_day14_vs_AF_bleo_day35 <- FindMarkers(seurat_cluster, 
+                                         ident.1 = "Alveolar fibroblasts_Day 14",
+                                         ident.2 = "Alveolar fibroblasts_Day 35",
+                                         logfc.threshold = 0.1,
+                                         min.pct = 0.01,
+                                         test.use = "wilcox",
+                                         verbose = FALSE)
+
+# Edit the output table and add annotations.
+AF_day14_vs_AF_bleo_day35 <- AF_day14_vs_AF_bleo_day35 %>% rownames_to_column("geneID") 
+AF_day14_vs_AF_bleo_day35 <- dplyr::left_join(AF_day14_vs_AF_bleo_day35, 
+                                              annotations, 
+                                              by = c("geneID" = "gene_name"))
+
+# Get the top 15 and bottom 15 values from the DEG output.
+deg_genes <- (AF_day14_vs_AF_bleo_day35 %>% 
+                dplyr::filter(p_val < 1e-05) %>% 
+                arrange(desc(avg_log2FC)))
+deg_genes = rbind(utils::head(deg_genes, n = 15), utils::tail(deg_genes, n = 15))
+
+# Visualize via volcano plot.
+EnhancedVolcano(AF_day14_vs_AF_bleo_day35, 
+                AF_day14_vs_AF_bleo_day35$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val",
+                selectLab = c(deg_genes$geneID, "Antxr1", "Antxr2"),
+                title = "Alveolar Fibroblast Day 14 vs. Alveolar Fibroblast Bleomycin Day 35",
+                FCcutoff = 1.0,
+                pointSize = 3.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+
+# Print table.
+AF_day14_vs_AF_bleo_day35 %>% reactable(searchable = TRUE,
+                                        striped = TRUE,
+                                        highlight = TRUE,
+                                        bordered = TRUE,
+                                        showSortable = TRUE,
+                                        theme = reactableTheme(borderColor = "#dfe2e5",
+                                                               stripedColor = "#f6f8fa",
+                                                               highlightColor = "#f0f5f9",
+                                                               style = list(fontFamily = "-apple-system,
+                                                               BlinkMacSystemFont, 
+                                                               Segoe UI, 
+                                                               Helvetica, 
+                                                               Arial, 
+                                                               sans-serif"),
+                                                               searchInputStyle = list(width = "100%")))
+
+# Remove unneeded objects.
+rm(AF_day14_vs_AF_bleo_day35, deg_genes)
+```
+
+
+## Step 3.4: Peribronchial fibroblasts
+
+### Step 3.4.1: PeribronchialFibroblasts_Sham vs PeribronchialFibroblasts_Bleo_Day14
+
+```{r PF_Sham vs PF_Bleo_Day14, warning=FALSE, fig.height=12, fig.width=15, out.width="100%"}
+# Find the genes that are differentially expressed between Peribronchial Fibroblasts Sham and Peribronchial Fibroblasts Bleo Day14.
+Idents(seurat_cluster) <- "comparison_var"
+PF_sham_vs_PF_bleo_day14 <- FindMarkers(seurat_cluster, 
+                                        ident.1 = "Peribronchial fibroblasts_Sham",
+                                        ident.2 = "Peribronchial fibroblasts_Day 14",
+                                        logfc.threshold = 0.1,
+                                        min.pct = 0.01,
+                                        test.use = "wilcox",
+                                        verbose = FALSE)
+
+# Edit the output table and add annotations.
+PF_sham_vs_PF_bleo_day14 <- PF_sham_vs_PF_bleo_day14 %>% rownames_to_column("geneID") 
+PF_sham_vs_PF_bleo_day14 <- dplyr::left_join(PF_sham_vs_PF_bleo_day14, 
+                                             annotations, 
+                                             by = c("geneID" = "gene_name"))
+
+# Get the top 15 and bottom 15 values from the DEG output.
+deg_genes <- (PF_sham_vs_PF_bleo_day14 %>% 
+                dplyr::filter(p_val < 1e-05) %>% 
+                arrange(desc(avg_log2FC)))
+deg_genes = rbind(utils::head(deg_genes, n = 15), utils::tail(deg_genes, n = 15))
+
+# Visualize via volcano plot.
+EnhancedVolcano(PF_sham_vs_PF_bleo_day14, 
+                PF_sham_vs_PF_bleo_day14$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val",
+                selectLab = c(deg_genes$geneID, "Antxr1", "Antxr2"),
+                title = "Peribronchial Fibroblast Sham vs. Peribronchial Fibroblast Bleomycin Day 14",
+                FCcutoff = 1.0,
+                pointSize = 3.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+
+# Print table.
+PF_sham_vs_PF_bleo_day14 %>% reactable(searchable = TRUE,
+                                       striped = TRUE,
+                                       highlight = TRUE,
+                                       bordered = TRUE,
+                                       showSortable = TRUE,
+                                       theme = reactableTheme(borderColor = "#dfe2e5",
+                                                              stripedColor = "#f6f8fa",
+                                                              highlightColor = "#f0f5f9",
+                                                              style = list(fontFamily = "-apple-system,
+                                                              BlinkMacSystemFont, 
+                                                              Segoe UI, 
+                                                              Helvetica, 
+                                                              Arial, 
+                                                              sans-serif"),
+                                                              searchInputStyle = list(width = "100%")))
+
+# Remove unneeded objects.
+rm(PF_sham_vs_PF_bleo_day14, deg_genes)
+```
+
+
+### Step 3.4.2: PeribronchialFibroblasts_Sham vs PeribronchialFibroblasts_Bleo_Day35
+
+```{r PF_Sham vs PF_Bleo_Day35, warning=FALSE, fig.height=12, fig.width=15, out.width="100%"}
+# Find the genes that are differentially expressed between Peribronchial Fibroblasts Sham and Peribronchial Fibroblasts Bleo Day35.
+Idents(seurat_cluster) <- "comparison_var"
+PF_sham_vs_PF_bleo_day35 <- FindMarkers(seurat_cluster, 
+                                        ident.1 = "Peribronchial fibroblasts_Sham",
+                                        ident.2 = "Peribronchial fibroblasts_Day 35",
+                                        logfc.threshold = 0.1,
+                                        min.pct = 0.01,
+                                        test.use = "wilcox",
+                                        verbose = FALSE)
+
+# Edit the output table and add annotations.
+PF_sham_vs_PF_bleo_day35 <- PF_sham_vs_PF_bleo_day35 %>% rownames_to_column("geneID") 
+PF_sham_vs_PF_bleo_day35 <- dplyr::left_join(PF_sham_vs_PF_bleo_day35, 
+                                             annotations, 
+                                             by = c("geneID" = "gene_name"))
+
+# Get the top 15 and bottom 15 values from the DEG output.
+deg_genes <- (PF_sham_vs_PF_bleo_day35 %>% 
+                dplyr::filter(p_val < 1e-05) %>% 
+                arrange(desc(avg_log2FC)))
+deg_genes = rbind(utils::head(deg_genes, n = 15), utils::tail(deg_genes, n = 15))
+
+# Visualize via volcano plot.
+EnhancedVolcano(PF_sham_vs_PF_bleo_day35, 
+                PF_sham_vs_PF_bleo_day35$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val",
+                selectLab = c(deg_genes$geneID, "Antxr1", "Antxr2"),
+                title = "Peribronchial Fibroblast Sham vs. Peribronchial Fibroblast Bleomycin Day 35",
+                FCcutoff = 1.0,
+                pointSize = 3.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+
+# Print table.
+PF_sham_vs_PF_bleo_day35 %>% reactable(searchable = TRUE,
+                                       striped = TRUE,
+                                       highlight = TRUE,
+                                       bordered = TRUE,
+                                       showSortable = TRUE,
+                                       theme = reactableTheme(borderColor = "#dfe2e5",
+                                                              stripedColor = "#f6f8fa",
+                                                              highlightColor = "#f0f5f9",
+                                                              style = list(fontFamily = "-apple-system,
+                                                              BlinkMacSystemFont, 
+                                                              Segoe UI, 
+                                                              Helvetica, 
+                                                              Arial, 
+                                                              sans-serif"),
+                                                              searchInputStyle = list(width = "100%")))
+
+# Remove unneeded objects.
+rm(PF_sham_vs_PF_bleo_day35, deg_genes)
+```
+
+
+### Step 3.4.3: PeribronchialFibroblasts_Day14 vs PeribronchialFibroblasts_Bleo_Day35
+
+```{r PF_Bleo_Day14 vs PF_Bleo_Day35, warning=FALSE, fig.height=12, fig.width=15, out.width="100%"}
+# Find the genes that are differentially expressed between Peribronchial Fibroblasts Day14 and Peribronchial Fibroblasts Bleo Day35.
+Idents(seurat_cluster) <- "comparison_var"
+PF_day14_vs_PF_bleo_day35 <- FindMarkers(seurat_cluster, 
+                                         ident.1 = "Peribronchial fibroblasts_Day 14",
+                                         ident.2 = "Peribronchial fibroblasts_Day 35",
+                                         logfc.threshold = 0.1,
+                                         min.pct = 0.01,
+                                         test.use = "wilcox",
+                                         verbose = FALSE)
+
+# Edit the output table and add annotations.
+PF_day14_vs_PF_bleo_day35 <- PF_day14_vs_PF_bleo_day35 %>% rownames_to_column("geneID") 
+PF_day14_vs_PF_bleo_day35 <- dplyr::left_join(PF_day14_vs_PF_bleo_day35, 
+                                              annotations, 
+                                              by = c("geneID" = "gene_name"))
+
+# Get the top 15 and bottom 15 values from the DEG output.
+deg_genes <- (PF_day14_vs_PF_bleo_day35 %>% 
+                dplyr::filter(p_val < 1e-05) %>% 
+                arrange(desc(avg_log2FC)))
+deg_genes = rbind(utils::head(deg_genes, n = 15), utils::tail(deg_genes, n = 15))
+
+# Visualize via volcano plot.
+EnhancedVolcano(PF_day14_vs_PF_bleo_day35, 
+                PF_day14_vs_PF_bleo_day35$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val",
+                selectLab = c(deg_genes$geneID, "Antxr1", "Antxr2"),
+                title = "Peribronchial Fibroblast Day 14 vs. Peribronchial Fibroblast Bleomycin Day 35",
+                FCcutoff = 1.0,
+                pointSize = 3.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+
+# Print table.
+PF_day14_vs_PF_bleo_day35 %>% reactable(searchable = TRUE,
+                                        striped = TRUE,
+                                        highlight = TRUE,
+                                        bordered = TRUE,
+                                        showSortable = TRUE,
+                                        theme = reactableTheme(borderColor = "#dfe2e5",
+                                                               stripedColor = "#f6f8fa",
+                                                               highlightColor = "#f0f5f9",
+                                                               style = list(fontFamily = "-apple-system,
+                                                               BlinkMacSystemFont, 
+                                                               Segoe UI, 
+                                                               Helvetica, 
+                                                               Arial, 
+                                                               sans-serif"),
+                                                               searchInputStyle = list(width = "100%")))
+
+# Remove unneeded objects.
+rm(PF_day14_vs_PF_bleo_day35, deg_genes)
+```
+
+
+# Step 4: Seurat pseudobulk DE analysis
+
+## Step 4.1: Aggregate sample-level information
+
+```{r aggregate sample-level information, echo=FALSE}
+# In this dataset, the sample level identifiers are stored in orig.ident and title. Let's examine them.
+table(seurat_cluster$orig.ident, seurat_cluster$title)
+
+# Aggregate based on orig.ident and cell type.
+pseudo_data <- AggregateExpression(seurat_cluster, group.by = c("orig.ident", "predicted.ann_finest_level"), return.seurat = TRUE)
+
+# Replace orig.ident column from underscores to dashes to match pseudobulk metadata.
+seurat_cluster$orig.ident <- gsub("_", "-", seurat_cluster$orig.ident)
+
+# Merge metadata variables of interest with aggregated pseudobulk metadata.
+seurat_cluster$orig.ident <- paste(seurat_cluster$orig.ident, seurat_cluster$predicted.ann_finest_level, sep = "_")
+
+# Get metadata from seurat_cluster.
+metadata = seurat_cluster@meta.data %>% subset(select = c(orig.ident, treatment, timepoint))
+metadata <- metadata[!duplicated(metadata$orig.ident),]
+
+# Check similarities between both metadatas.
+dim(metadata)[1] # 431 rows.
+dim(pseudo_data@meta.data)[1] # 431 rows.
+all(pseudo_data$orig.ident %in% metadata$orig.ident) # TRUE.
+
+# Merge the cell metadata with the pseudobulk metadata.
+pseudo_data@meta.data <- left_join(pseudo_data@meta.data, metadata) %>%
+  column_to_rownames("orig.ident")
+all(rownames(pseudo_data@meta.data) == colnames(pseudo_data)) # TRUE.
+
+# Create a pseudobulk comparison variable column.
+pseudo_data$comparison_var <- paste(pseudo_data$predicted.ann_finest_level, pseudo_data$timepoint, sep = "_")
+
+# Aggregate fibroblast variables together.
+grep("fibroblast", pseudo_data$comparison_var, value = TRUE) %>% unique() %>% sort()
+pseudo_data$comparison_var <- gsub("Adventitial fibroblasts_Day 14", "Fibroblast_Day 14", 
+                              gsub("Adventitial fibroblasts_Day 35", "Fibroblast_Day 35",
+                              gsub("Adventitial fibroblasts_Sham", "Fibroblast_Sham",
+                              gsub("Alveolar fibroblasts_Day 14", "Fibroblast_Day 14",
+                              gsub("Alveolar fibroblasts_Day 35", "Fibroblast_Day 35",
+                              gsub("Alveolar fibroblasts_Sham", "Fibroblast_Sham",
+                              gsub("Myofibroblasts_Day 14", "Fibroblast_Day 14",
+                              gsub("Myofibroblasts_Day 35", "Fibroblast_Day 35",
+                              gsub("Myofibroblasts_Sham", "Fibroblast_Sham",
+                              gsub("Peribronchial fibroblasts_Day 14", "Fibroblast_Day 14",
+                              gsub("Peribronchial fibroblasts_Day 35", "Fibroblast_Day 35",
+                              gsub("Peribronchial fibroblasts_Sham", "Fibroblast_Sham", pseudo_data$comparison_var))))))))))))
+
+# Set comparison column as new ident.
+Idents(pseudo_data) <- "comparison_var"
+```
+
+
+## Step 4.2: AT2 cells
+
+### Step 4.2.1: AT2_Sham vs. AT2_Day 14
+
+```{r AT2_sham vs AT2_day14 - seurat DE, out.width="100%"}
+# Find the differentially expressed genes between AT2_Sham vs. AT2_Day14
+AT2_sham_d14 <- FindMarkers(object = pseudo_data,
+                            ident.1 = "AT2_Sham",
+                            ident.2 = "AT2_Day 14",
+                            test.use = "DESeq2",
+                            min.cells.group = 2)
+
+# Add annotation to the DE output.
+AT2_sham_d14 <- AT2_sham_d14 %>% rownames_to_column("geneID") 
+AT2_sham_d14 <- dplyr::left_join(AT2_sham_d14, annotations, by = c("geneID" = "gene_name"))
+
+# Print DE output table.
+AT2_sham_d14 %>% 
+  reactable(searchable = TRUE,
+            striped = TRUE,
+            highlight = TRUE,
+            bordered = TRUE,
+            showSortable = TRUE,
+            theme = reactableTheme(borderColor = "#dfe2e5",
+                                   stripedColor = "#f6f8fa",
+                                   highlightColor = "#f0f5f9",
+                                   style = list(fontFamily = "-apple-system,
+                                   BlinkMacSystemFont, 
+                                   Segoe UI, 
+                                   Helvetica, 
+                                   Arial, 
+                                   sans-serif"),
+                                   searchInputStyle = list(width = "100%")))
+```
+
+
+Visualize differentially expressed genes between AT2_Sham and AT2_Day 14 in a volcano plot.
+
+```{r AT2_sham vs AT2_day14 - volcano plot, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+EnhancedVolcano(AT2_sham_d14, 
+                AT2_sham_d14$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val",
+                selectLab = c(AT2_sham_d14[c(AT2_sham_d14$p_val < 1e-05 & 
+                                               (AT2_sham_d14$avg_log2FC > 1 | 
+                                                  AT2_sham_d14$avg_log2FC < -1)),]$geneID, 
+                              "Antxr1", "Antxr2"),
+                title = "AT2 Sham Young vs. AT2 Bleomycin Day 14 Young",
+                pointSize = 1.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+```
+
+
+### Step 4.2.2: AT2_Sham vs. AT2_Day 35
+
+```{r AT2_sham vs AT2_day35 - seurat DE, out.width="100%"}
+# Find the differentially expressed genes between AT2_Sham vs. AT2_Day35.
+AT2_sham_d35 <- FindMarkers(object = pseudo_data,
+                            ident.1 = "AT2_Sham",
+                            ident.2 = "AT2_Day 35",
+                            test.use = "DESeq2",
+                            min.cells.group = 2)
+
+# Add annotation to the DE output.
+AT2_sham_d35 <- AT2_sham_d35 %>% rownames_to_column("geneID") 
+AT2_sham_d35 <- dplyr::left_join(AT2_sham_d35, annotations, by = c("geneID" = "gene_name"))
+
+# Print DE output table.
+AT2_sham_d35 %>% 
+  reactable(searchable = TRUE,
+            striped = TRUE,
+            highlight = TRUE,
+            bordered = TRUE,
+            showSortable = TRUE,
+            theme = reactableTheme(borderColor = "#dfe2e5",
+                                   stripedColor = "#f6f8fa",
+                                   highlightColor = "#f0f5f9",
+                                   style = list(fontFamily = "-apple-system,
+                                   BlinkMacSystemFont, 
+                                   Segoe UI, 
+                                   Helvetica, 
+                                   Arial, 
+                                   sans-serif"),
+                                   searchInputStyle = list(width = "100%")))
+```
+
+
+Visualize differentially expressed genes between AT2_Sham and AT2_Day35 in a volcano plot.
+
+```{r AT2_sham vs AT2_day35 - volcano plot, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+EnhancedVolcano(AT2_sham_d35, 
+                AT2_sham_d35$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val",
+                selectLab = c(AT2_sham_d35[c(AT2_sham_d35$p_val < 1e-05 & 
+                                               (AT2_sham_d35$avg_log2FC > 1 | 
+                                                  AT2_sham_d35$avg_log2FC < -1)),]$geneID, 
+                              "Antxr1", "Antxr2"),
+                title = "AT2 Sham Young vs. AT2 Bleomycin Day 35 Young",
+                pointSize = 1.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+```
+
+
+### Step 4.2.3: AT2_Day 14 vs. AT2_Day 35
+
+```{r AT2_day14 vs AT2_day35 - seurat DE, out.width="100%"}
+# Find the differentially expressed genes between AT2_Day14 vs. AT2_Day35.
+AT2_d14_d35 <- FindMarkers(object = pseudo_data,
+                           ident.1 = "AT2_Day 14",
+                           ident.2 = "AT2_Day 35",
+                           test.use = "DESeq2",
+                           min.cells.group = 2)
+
+# Add annotation to the DE output.
+AT2_d14_d35 <- AT2_d14_d35 %>% rownames_to_column("geneID") 
+AT2_d14_d35 <- dplyr::left_join(AT2_d14_d35, annotations, by = c("geneID" = "gene_name"))
+
+# Print DE output table.
+AT2_d14_d35 %>% 
+  reactable(searchable = TRUE,
+            striped = TRUE,
+            highlight = TRUE,
+            bordered = TRUE,
+            showSortable = TRUE,
+            theme = reactableTheme(borderColor = "#dfe2e5",
+                                   stripedColor = "#f6f8fa",
+                                   highlightColor = "#f0f5f9",
+                                   style = list(fontFamily = "-apple-system,
+                                   BlinkMacSystemFont, 
+                                   Segoe UI, 
+                                   Helvetica, 
+                                   Arial, 
+                                   sans-serif"),
+                                   searchInputStyle = list(width = "100%")))
+```
+
+
+Visualize differentially expressed genes between AT2_Day14 and AT2_Day35 in a volcano plot.
+
+```{r AT2_day14 vs AT2_day35 - volcano plot, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+EnhancedVolcano(AT2_d14_d35, 
+                AT2_d14_d35$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val",
+                selectLab = c(AT2_d14_d35[c(AT2_d14_d35$p_val < 1e-05 & 
+                                               (AT2_d14_d35$avg_log2FC > 1 | 
+                                                  AT2_d14_d35$avg_log2FC < -1)),]$geneID, 
+                              "Antxr1", "Antxr2"),
+                title = "AT2 Bleomycin Day 14 Young vs. AT2 Bleomycin Day 35 Young",
+                pointSize = 1.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+```
+
+
+## Step 4.3: AT1 cells
+
+### Step 4.3.1: AT1_Sham vs. AT1_Day 14
+
+```{r AT1_sham vs AT1_day14 - seurat DE, out.width="100%"}
+# Find the differentially expressed genes between AT1_Sham vs. AT1_Day14
+AT1_sham_d14 <- FindMarkers(object = pseudo_data,
+                            ident.1 = "AT1_Sham",
+                            ident.2 = "AT1_Day 14",
+                            test.use = "DESeq2",
+                            min.cells.group = 2)
+
+# Add annotation to the DE output.
+AT1_sham_d14 <- AT1_sham_d14 %>% rownames_to_column("geneID") 
+AT1_sham_d14 <- dplyr::left_join(AT1_sham_d14, annotations, by = c("geneID" = "gene_name"))
+
+# Print DE output table.
+AT1_sham_d14 %>% 
+  reactable(searchable = TRUE,
+            striped = TRUE,
+            highlight = TRUE,
+            bordered = TRUE,
+            showSortable = TRUE,
+            theme = reactableTheme(borderColor = "#dfe2e5",
+                                   stripedColor = "#f6f8fa",
+                                   highlightColor = "#f0f5f9",
+                                   style = list(fontFamily = "-apple-system,
+                                   BlinkMacSystemFont, 
+                                   Segoe UI, 
+                                   Helvetica, 
+                                   Arial, 
+                                   sans-serif"),
+                                   searchInputStyle = list(width = "100%")))
+```
+
+
+Visualize differentially expressed genes between AT1_Sham and AT1_Day 14 in a volcano plot.
+
+```{r AT1_sham vs AT1_day14 - volcano plot, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+EnhancedVolcano(AT1_sham_d14, 
+                AT1_sham_d14$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val",
+                selectLab = c(AT1_sham_d14[c(AT1_sham_d14$p_val < 1e-05 & 
+                                               (AT1_sham_d14$avg_log2FC > 1 | 
+                                                  AT1_sham_d14$avg_log2FC < -1)),]$geneID, 
+                              "Antxr1", "Antxr2"),
+                title = "AT1 Sham Young vs. AT1 Bleomycin Day 14 Young",
+                pointSize = 1.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+```
+
+
+### Step 4.3.2: AT1_Sham vs. AT1_Day 35
+
+```{r AT1_sham vs AT1_day35 - seurat DE, out.width="100%"}
+# Find the differentially expressed genes between AT1_Sham vs. AT1_Day35
+AT1_sham_d35 <- FindMarkers(object = pseudo_data,
+                            ident.1 = "AT1_Sham",
+                            ident.2 = "AT1_Day 35",
+                            test.use = "DESeq2",
+                            min.cells.group = 2)
+
+# Add annotation to the DE output.
+AT1_sham_d35 <- AT1_sham_d35 %>% rownames_to_column("geneID") 
+AT1_sham_d35 <- dplyr::left_join(AT1_sham_d35, annotations, by = c("geneID" = "gene_name"))
+
+# Print DE output table.
+AT1_sham_d35 %>% 
+  reactable(searchable = TRUE,
+            striped = TRUE,
+            highlight = TRUE,
+            bordered = TRUE,
+            showSortable = TRUE,
+            theme = reactableTheme(borderColor = "#dfe2e5",
+                                   stripedColor = "#f6f8fa",
+                                   highlightColor = "#f0f5f9",
+                                   style = list(fontFamily = "-apple-system,
+                                   BlinkMacSystemFont, 
+                                   Segoe UI, 
+                                   Helvetica, 
+                                   Arial, 
+                                   sans-serif"),
+                                   searchInputStyle = list(width = "100%")))
+```
+
+
+Visualize differentially expressed genes between AT1_Sham and AT1_Day 35 in a volcano plot.
+
+```{r AT1_sham vs AT1_day35 - volcano plot, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+EnhancedVolcano(AT1_sham_d35, 
+                AT1_sham_d35$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val",
+                selectLab = c(AT1_sham_d35[c(AT1_sham_d35$p_val < 1e-05 & 
+                                               (AT1_sham_d35$avg_log2FC > 1 | 
+                                                  AT1_sham_d35$avg_log2FC < -1)),]$geneID, 
+                              "Antxr1", "Antxr2"),
+                title = "AT1 Sham Young vs. AT1 Bleomycin Day 35 Young",
+                pointSize = 1.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+```
+
+
+### Step 4.3.3: AT1_Day 14 vs. AT1_Day 35
+
+```{r AT1_day14 vs AT1_day35 - seurat DE, out.width="100%"}
+# Find the differentially expressed genes between AT1_Day14 vs. AT1_Day35
+AT1_d14_d35 <- FindMarkers(object = pseudo_data,
+                           ident.1 = "AT1_Day 14",
+                           ident.2 = "AT1_Day 35",
+                           test.use = "DESeq2",
+                           min.cells.group = 2)
+
+# Add annotation to the DE output.
+AT1_d14_d35 <- AT1_d14_d35 %>% rownames_to_column("geneID") 
+AT1_d14_d35 <- dplyr::left_join(AT1_d14_d35, annotations, by = c("geneID" = "gene_name"))
+
+# Print DE output table.
+AT1_d14_d35 %>% 
+  reactable(searchable = TRUE,
+            striped = TRUE,
+            highlight = TRUE,
+            bordered = TRUE,
+            showSortable = TRUE,
+            theme = reactableTheme(borderColor = "#dfe2e5",
+                                   stripedColor = "#f6f8fa",
+                                   highlightColor = "#f0f5f9",
+                                   style = list(fontFamily = "-apple-system,
+                                   BlinkMacSystemFont, 
+                                   Segoe UI, 
+                                   Helvetica, 
+                                   Arial, 
+                                   sans-serif"),
+                                   searchInputStyle = list(width = "100%")))
+```
+
+
+Visualize differentially expressed genes between AT1_Day 14 and AT1_Day 35 in a volcano plot.
+
+```{r AT1_day14 vs AT1_day35 - volcano plot, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+EnhancedVolcano(AT1_d14_d35, 
+                AT1_d14_d35$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val",
+                selectLab = c(AT1_d14_d35[c(AT1_d14_d35$p_val < 1e-05 & 
+                                               (AT1_d14_d35$avg_log2FC > 1 | 
+                                                  AT1_d14_d35$avg_log2FC < -1)),]$geneID, 
+                              "Antxr1", "Antxr2"),
+                title = "AT1 Day 14 Young vs. AT1 Bleomycin Day 35 Young",
+                pointSize = 1.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+```
+
+
+## Step 4.4: Fibroblasts
+
+### Step 4.4.1: Fibroblast_Sham vs. Fibroblast_Day 14
+
+```{r Fibroblast_sham vs Fibroblast_day14 - seurat DE, out.width="100%"}
+# Find the differentially expressed genes between Fibroblast_Sham vs. Fibroblast_Day14
+Fibroblast_sham_d14 <- FindMarkers(object = pseudo_data,
+                                   ident.1 = "Fibroblast_Sham",
+                                   ident.2 = "Fibroblast_Day 14",
+                                   test.use = "DESeq2",
+                                   min.cells.group = 2)
+
+# Add annotation to the DE output.
+Fibroblast_sham_d14 <- Fibroblast_sham_d14 %>% rownames_to_column("geneID") 
+Fibroblast_sham_d14 <- dplyr::left_join(Fibroblast_sham_d14, annotations, by = c("geneID" = "gene_name"))
+
+# Print DE output table.
+Fibroblast_sham_d14 %>% 
+  reactable(searchable = TRUE,
+            striped = TRUE,
+            highlight = TRUE,
+            bordered = TRUE,
+            showSortable = TRUE,
+            theme = reactableTheme(borderColor = "#dfe2e5",
+                                   stripedColor = "#f6f8fa",
+                                   highlightColor = "#f0f5f9",
+                                   style = list(fontFamily = "-apple-system,
+                                   BlinkMacSystemFont, 
+                                   Segoe UI, 
+                                   Helvetica, 
+                                   Arial, 
+                                   sans-serif"),
+                                   searchInputStyle = list(width = "100%")))
+```
+
+
+Visualize differentially expressed genes between Fibroblast_Sham and Fibroblast_Day 14 in a volcano plot.
+
+```{r Fibroblast_sham vs Fibroblast_day14 - volcano plot, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+EnhancedVolcano(Fibroblast_sham_d14, 
+                Fibroblast_sham_d14$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val",
+                selectLab = c(Fibroblast_sham_d14[c(Fibroblast_sham_d14$p_val < 1e-05 & 
+                                                      (Fibroblast_sham_d14$avg_log2FC > 1 | 
+                                                         Fibroblast_sham_d14$avg_log2FC < -1)),]$geneID, 
+                              "Antxr1", "Antxr2"),
+                title = "Fibroblasts (Total) Sham Young vs. Fibroblasts (Total) Bleomycin Day 14 Young",
+                pointSize = 1.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+```
+
+
+### Step 4.4.2: Fibroblast_Sham vs. Fibroblast_Day 35
+
+```{r Fibroblast_sham vs Fibroblast_day35 - seurat DE, out.width="100%"}
+# Find the differentially expressed genes between Fibroblast_Sham vs. Fibroblast_Day35
+Fibroblast_sham_d35 <- FindMarkers(object = pseudo_data,
+                                   ident.1 = "Fibroblast_Sham",
+                                   ident.2 = "Fibroblast_Day 35",
+                                   test.use = "DESeq2",
+                                   min.cells.group = 2)
+
+# Add annotation to the DE output.
+Fibroblast_sham_d35 <- Fibroblast_sham_d35 %>% rownames_to_column("geneID") 
+Fibroblast_sham_d35 <- dplyr::left_join(Fibroblast_sham_d35, annotations, by = c("geneID" = "gene_name"))
+
+# Print DE output table.
+Fibroblast_sham_d35 %>% 
+  reactable(searchable = TRUE,
+            striped = TRUE,
+            highlight = TRUE,
+            bordered = TRUE,
+            showSortable = TRUE,
+            theme = reactableTheme(borderColor = "#dfe2e5",
+                                   stripedColor = "#f6f8fa",
+                                   highlightColor = "#f0f5f9",
+                                   style = list(fontFamily = "-apple-system,
+                                   BlinkMacSystemFont, 
+                                   Segoe UI, 
+                                   Helvetica, 
+                                   Arial, 
+                                   sans-serif"),
+                                   searchInputStyle = list(width = "100%")))
+```
+
+
+Visualize differentially expressed genes between Fibroblast_Sham and Fibroblast_Day 35 in a volcano plot.
+
+```{r Fibroblast_sham vs Fibroblast_day35 - volcano plot, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+EnhancedVolcano(Fibroblast_sham_d35, 
+                Fibroblast_sham_d35$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val",
+                selectLab = c(Fibroblast_sham_d35[c(Fibroblast_sham_d35$p_val < 1e-05 & 
+                                                      (Fibroblast_sham_d35$avg_log2FC > 1 | 
+                                                         Fibroblast_sham_d35$avg_log2FC < -1)),]$geneID, 
+                              "Antxr1", "Antxr2"),
+                title = "Fibroblasts (Total) Sham Young vs. Fibroblasts (Total) Bleomycin Day 35 Young",
+                pointSize = 1.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+```
+
+
+### Step 4.4.3: Fibroblast_Day 14 vs. Fibroblast_Day 35
+
+```{r Fibroblast_day14 vs Fibroblast_day35 - seurat DE, out.width="100%"}
+# Find the differentially expressed genes between Fibroblast_Day14 vs. Fibroblast_Day35
+Fibroblast_d14_d35 <- FindMarkers(object = pseudo_data,
+                                  ident.1 = "Fibroblast_Day 14",
+                                  ident.2 = "Fibroblast_Day 35",
+                                  test.use = "DESeq2",
+                                  min.cells.group = 2)
+
+# Add annotation to the DE output.
+Fibroblast_d14_d35 <- Fibroblast_d14_d35 %>% rownames_to_column("geneID") 
+Fibroblast_d14_d35 <- dplyr::left_join(Fibroblast_d14_d35, annotations, by = c("geneID" = "gene_name"))
+
+# Print DE output table.
+Fibroblast_d14_d35 %>% 
+  reactable(searchable = TRUE,
+            striped = TRUE,
+            highlight = TRUE,
+            bordered = TRUE,
+            showSortable = TRUE,
+            theme = reactableTheme(borderColor = "#dfe2e5",
+                                   stripedColor = "#f6f8fa",
+                                   highlightColor = "#f0f5f9",
+                                   style = list(fontFamily = "-apple-system,
+                                   BlinkMacSystemFont, 
+                                   Segoe UI, 
+                                   Helvetica, 
+                                   Arial, 
+                                   sans-serif"),
+                                   searchInputStyle = list(width = "100%")))
+```
+
+
+Visualize differentially expressed genes between Fibroblast_Day14 and Fibroblast_Day 35 in a volcano plot.
+
+```{r Fibroblast_day14 vs Fibroblast_day35 - volcano plot, warning=FALSE, fig.height=8, fig.width=15, out.width="100%"}
+EnhancedVolcano(Fibroblast_d14_d35, 
+                Fibroblast_d14_d35$geneID, 
+                x = "avg_log2FC", 
+                y = "p_val",
+                selectLab = c(Fibroblast_d14_d35[c(Fibroblast_d14_d35$p_val < 1e-05 & 
+                                                      (Fibroblast_d14_d35$avg_log2FC > 1 | 
+                                                         Fibroblast_d14_d35$avg_log2FC < -1)),]$geneID, 
+                              "Antxr1", "Antxr2"),
+                title = "Fibroblasts (Total) Bleomycin Day 14 Young vs. Fibroblasts (Total) Bleomycin Day 35 Young",
+                pointSize = 1.0,
+                colAlpha = 0.8,
+                drawConnectors = TRUE,
+                legendPosition = "bottom",
+                legendLabSize = 12.0,
+                legendIconSize = 3.0)
+```
+
+
+
+
+
+
+
+# References
+
+Analysis codes are adapted from [HBCtraining](https://hbctraining.github.io/scRNA-seq_online/lessons/08_SC_clustering_quality_control.html) and [Ouyang Lab](https://ouyanglab.com/singlecell/clust.html) with credits going to the original authors of the publications cited in the book. 
+
